@@ -115,7 +115,7 @@ def apply_transformation_to_dataset(in_dir, out_dir, mode, size=None, jpg_flag=F
     for class_dir_path in list(map(str, filter(
             lambda x: x.is_dir(), Path(in_dir.rstrip('/')).iterdir()))):
         class_out_path = out_dir_path.joinpath(f"{class_dir_path.stem}_{mode}")
-        class_out_path.mkdir(exist_ok=True)
+        class_out_path.mkdir(exist_ok=True, parents=True)
         if size is None:
             images = image_paths(class_dir_path)
         else:

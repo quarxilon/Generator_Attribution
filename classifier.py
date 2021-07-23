@@ -388,9 +388,9 @@ def train_model(args):
     ckpt_dir = f"./checkpoints/{model_id}/{instance_id}"
     model_dir = f"./trained_models/{model_id}"
     if not Path(ckpt_dir).exists():
-        Path(ckpt_dir).mkdir()
+        Path(ckpt_dir).mkdir(parents=True)
     if not Path(model_dir).exists():
-        Path(model_dir).mkdir()
+        Path(model_dir).mkdir(parents=True)
     log_path = f"./logs/{model_id}/{instance_id}"
     
     # DEFINE CALLBACKS
@@ -536,9 +536,9 @@ def test_model(args):
     raw_results_path = Path(f"./test_results/{model_id}/{instance_id}/{test_timestamp}")
     results_path = Path(f"./test_results/{model_id}/{instance_id}")
     if not raw_results_path.exists():
-        raw_results_path.mkdir()
+        raw_results_path.mkdir(parents=True)
     # if not results_path.exists():
-    #     results_path.mkdir()
+    #     results_path.mkdir(parents=True)
     
     # EVALUATE MODEL ON TEST SET
     raw_predictions = np.array(model.predict(test_datagen, verbose=0))

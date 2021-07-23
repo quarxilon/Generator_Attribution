@@ -91,7 +91,7 @@ def main(args):
             raise NotImplementedError("Only 128x128 supported for CelebA!")
     if args.amount != AMOUNT:
         AMOUNT = args.amount
-    Path(args.OUTPUT.rstrip('/')).mkdir(exist_ok=True)
+    Path(args.OUTPUT.rstrip('/')).mkdir(exist_ok=True, parents=True)
     images = list(sorted(image_paths(args.SOURCE), key=_get_image_id))[:AMOUNT]
     images_metadata = map(lambda i: (Path(i), args.OUTPUT, args.celeba, args.jpeg_output), images)
     with ProcessPoolExecutor() as pool:
