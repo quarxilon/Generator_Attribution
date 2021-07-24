@@ -67,13 +67,12 @@ def make_confusion_matrix(cf, group_names=None, categories='auto', count=True,
             precision = cf[1,1] / sum(cf[:,1])
             recall    = cf[1,1] / sum(cf[1,:])
             f1_score  = 2*precision*recall / (precision + recall)
-            stats_text = "\n\nACCURACY={0:.2%}\nPRECISION={0:.2%}\nRECALL={0:.2%}\nF1 SCORE={0:.2%}".format(
-                accuracy, precision, recall, f1_score)
+            stats_text = f"\n\nACCURACY={accuracy:.2%}\nPRECISION={precision:.2%}\nRECALL={recall:.2%}\nF1 SCORE={f1_score:.2%}"
         else:
-            stats_text = "\n\nACCURACY={0:.2%}".format(accuracy)
+            stats_text = f"\n\nACCURACY={accuracy:.2%}"
             
         if extra_text is not None:
-            stats_text += "\n\n{}".format(extra_text)
+            stats_text += f"\n\n{extra_text}"
         
     else:
         stats_text = ""
@@ -101,3 +100,5 @@ def make_confusion_matrix(cf, group_names=None, categories='auto', count=True,
     
     if title:
         plt.title(title)
+        
+    plt.tight_layout()
