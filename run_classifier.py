@@ -6,6 +6,7 @@ https://github.com/RUB-SysSec/GANDCTAnalysis
 import argparse
 import cv2
 import os
+import functools
 
 import numpy as np
 import tensorflow as tf
@@ -326,7 +327,8 @@ def gradcam_dct(raw_images, fmaps, gradients, cmap=cv2.COLORMAP_JET):
     gradcams = tf.nn.relu(gradcams)
     gradcams = gradcams / tf.math.reduce_max(gradcams)
     gradcams = gradcams.numpy()
-    return list(map(_impose_heatmap, gradcams, dcts, cmap))
+    make_heatmap = functools.partial(_impose_heatmap, cmap=cmap)
+    return list(map(make_heatmap, gradcams, dcts))
 
 
 
