@@ -112,39 +112,40 @@ def apply_transformation_to_dataset(in_dir, out_dir, mode, size=None, jpg_flag=F
         
     out_dir_path = Path(out_dir.rstrip('/'))
 
-    for class_dir_path in list(map(str, filter(
-            lambda x: x.is_dir(), Path(in_dir.rstrip('/')).iterdir()))):
-        class_out_path = out_dir_path.joinpath(f"{class_dir_path.stem}_{mode}")
-        class_out_path.mkdir(exist_ok=True, parents=True)
-        if size is None:
-            images = image_paths(class_dir_path)
-        else:
-            images = image_paths(class_dir_path)[:size]
-        # images = map(np.asarray, map(Image.open, images))
-        
-        num_augmented = 0
-        for image in images:
-            new_image = np.asarray(Image.open(image))
-            suffix = str()
+    for class_dir_path in filter(lambda x: x.is_dir(), Path(in_dir.rstrip('/')).iterdir()):
+        for source_dir_path in filter(lambda x: x.is_dir(), class_dir_path.iterdir()):
             
-            is_augmented = False
-            for image_function in image_functions:
-                if np.random.sample() >= AUGMENT_PROB:
-                    aug_image, param = image_function(new_image)
-                    # assert that image and aug_image are not entirely identical
-                    assert not np.isclose(aug_image, new_image).all()
-                    new_image = aug_image
-                    suffix += f"_{image_function.__name__}{int(param)}"
-                    if not is_augmented:
-                        num_augmented += 1
-                        is_augmented = True
+            source_out_path = out_dir_path.joinpath(class_dir_path.stem).joinpath(source_dir_path.stem)
+            source_out_path.mkdir(exist_ok=True, parents=True)
+            if size is None:
+                images = image_paths(source_dir_path)
+            else:
+                images = image_paths(source_dir_path)[:size]
+            # images = map(np.asarray, map(Image.open, images))
+        
+            num_augmented = 0
+            for image in images:
+                new_image = np.asarray(Image.open(image))
+                suffix = str()
+                
+                is_augmented = False
+                for image_function in image_functions:
+                    if np.random.sample() >= AUGMENT_PROB:
+                        aug_image, param = image_function(new_image)
+                        # assert that image and aug_image are not entirely identical
+                        assert not np.isclose(aug_image, new_image).all()
+                        new_image = aug_image
+                        suffix += f"_{image_function.__name__}{int(param)}"
+                        if not is_augmented:
+                            num_augmented += 1
+                            is_augmented = True
 
-            Image.fromarray(new_image).save(class_out_path.joinpath(
-                f"{image.stem}{suffix}").with_suffix('.jpg' if jpg_flag else '.png').__str__())
-            if is_augmented:
-                print(f"\rConverted {num_augmented:06} out of {len(images) if size is None else max(len(images), size)} images for {class_dir_path.stem}!", end="")
+                Image.fromarray(new_image).save(source_out_path.joinpath(
+                    f"{image.stem}{suffix}").with_suffix('.jpg' if jpg_flag else '.png').__str__())
+                if is_augmented:
+                    print(f"\rConverted {num_augmented:06} out of {len(images) if size is None else max(len(images), size)} images for {source_dir_path.stem}!", end="")
 
-        print(f"\nFinished converting {class_dir_path.stem}!")
+            print(f"\nFinished converting {class_dir_path.stem}/{source_dir_path.stem}!")
 
 
 def main(args):
@@ -168,9 +169,9 @@ def parse_args():
     parser.add_argument(
         "MODE", help="Mode: {blur, crop, jpeg, noise, multi, all}.", type=str)
     parser.add_argument(
-        "IN_DIRECTORY", help="Directory of dataset to modify.", type=str)
+        "IN_DIRECTORY", help="Directory of raw dataset to modify.", type=str)
     parser.add_argument(
-        "OUT_DIRECTORY", help="Directory to save augmented dataset.", type=str)
+        "OUT_DIRECTORY", help="Directory to save augmented images.", type=str)
     parser.add_argument(
         "--size", "-s", help="Only process this amount of images.", type=int, default=None)
     parser.add_argument(

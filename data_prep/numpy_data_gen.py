@@ -19,7 +19,7 @@ class DataGenerator(keras.utils.Sequence):
     
     def __init__(self, dataset_path, dataset_size, labels=None, input_shape=(256,256,3), batch_size=32, 
                  shuffle=True, seed=2021, attribution=False, source_labels=None, chosen_source=None, 
-                 arch_level=False, baseline_model=False, multiclass=False, source_label_dict=None):
+                 arch_level=False, baseline=False, multiclass=False, source_id_dict=None):
         
         """
         Constructor parameters
@@ -28,7 +28,7 @@ class DataGenerator(keras.utils.Sequence):
             Preprocessed dataset filepath.
         dataset_size : int
             Total number of samples in dataset.
-        labels : np.array
+        labels : np.array (int)
             Deepfake detection labels, 0=real 1=fake. Not needed for pure attribution models.
         input_shape : (int,int,int)
             Image tensor shape. The default is (256,256,3).
@@ -40,25 +40,25 @@ class DataGenerator(keras.utils.Sequence):
             The default random seed is 2021.
         attribution : bool
             Whether image source attribution is being performed. The default is False.
-        source_labels : np.array, optional
+        source_labels : np.array (str), optional
             Image source attribution labels as strings with format "architecture_instance".
             The default is None.
         chosen_source : str, optional
             Selected source of interest for binary attribution. The default is None.
         arch_level : bool, optional
             Whether to perform attribution at the source model architecture level. The default is False.
-        baseline_model : bool, optional
+        baseline: bool, optional
             Whether a baseline classifier implementation without binary attribution capabilities is used.
             The default is False.
         multiclass : bool, optional
             Whether multiclass attribution is being performed. The default is False.
-        source_label_dict : {str : int}, optional
+        source_id_dict : {str : int}, optional
             Dictionary mapping source_labels string values to integer IDs. The default is None.
         """
         
         self.dataset_path = dataset_path
         self.dataset_size = dataset_size
-        if not (baseline_model and not multiclass):
+        if not (baseline and not multiclass):
             self.labels = labels
         self.input_shape = input_shape
         self.batch_size = batch_size
@@ -66,12 +66,13 @@ class DataGenerator(keras.utils.Sequence):
         self.attribution = attribution
         np.random.seed(seed)
         self.multiclass = multiclass
-        self.baseline_model = baseline_model
+        self.baseline = baseline
+        
         if attribution:
             self.source_labels = source_labels
             self.arch_level = arch_level
             if multiclass:
-                self.source_label_dict = source_label_dict
+                self.source_id_dict = source_id_dict
             elif arch_level:
                 self.chosen_source = chosen_source.split('_')[0]
             else:
@@ -120,10 +121,10 @@ class DataGenerator(keras.utils.Sequence):
         # Minibatch initialization
         batch_data = np.empty((self.batch_size, *self.input_shape))
         batch_labels = np.empty((self.batch_size))
-        if self.attribution and not self.baseline_model:
+        if self.attribution and not self.baseline:
             if self.multiclass:
                 batch_source_labels = np.empty(
-                    (len(self.source_label_dict), self.batch_size))
+                    (len(self.source_id_dict), self.batch_size))
             else:
                 batch_source_labels = np.empty((self.batch_size))
         
@@ -145,22 +146,22 @@ class DataGenerator(keras.utils.Sequence):
                     
                 # Process labels for multi-class attribution
                 if self.multiclass:
-                    if self.baseline_model:
+                    if self.baseline:
                         batch_labels[count] = 0 if (self.labels[index] == 0) \
-                            else self.source_label_dict[source_label]
+                            else self.source_id_dict[source_label]
                     else: # multiple binary attribution classifiers
                         if self.labels[index] == 0: # if real
                             batch_labels[count] = 0 # real
-                            for i in range(len(self.source_label_dict)):
+                            for i in range(len(self.source_id_dict)):
                                 batch_source_labels[i, count] = 0
                         else:
                             batch_labels[count] = 1 # fake
-                            for i in range(len(self.source_label_dict)):
+                            for i in range(len(self.source_id_dict)):
                                 batch_source_labels[i, count] = 1 if (
-                                    (i+1) == self.source_label_dict[source_label]) else 0
+                                    (i+1) == self.source_id_dict[source_label]) else 0
                 
                 # Process labels for binary attribution
-                elif self.baseline_model:
+                elif self.baseline:
                     batch_labels[count] = 1 if (source_label == self.chosen_source) else 0
                 else:
                     batch_labels[count] = self.labels[index]
@@ -171,7 +172,7 @@ class DataGenerator(keras.utils.Sequence):
                 batch_labels[count] = self.labels[index]
         
         # Pack minibatch tuple and return
-        if self.attribution and not self.baseline_model:
+        if self.attribution and not self.baseline:
             if self.multiclass:
                 list_of_labels = [batch_labels]
                 list_of_labels.extend(batch_source_labels)
@@ -180,3 +181,39 @@ class DataGenerator(keras.utils.Sequence):
                 return (batch_data, [batch_labels, batch_source_labels])
         else:
             return (batch_data, [batch_labels])
+        
+    
+    def get_output_signature(self):
+        batch_data_shape = (self.batch_size, *self.input_shape)
+        if self.attribution and not self.baseline:
+            if self.multiclass:
+                batch_labels_shape = (len(self.source_id_dict)+1, self.batch_size)
+            else:
+                batch_labels_shape = (2, self.batch_size)
+        else:
+            batch_labels_shape = (1, self.batch_size)
+        return (tf.TensorSpec(shape=batch_data_shape, dtype=tf.float32), 
+                tf.TensorSpec(shape=batch_labels_shape, dtype=tf.int32))
+        
+        
+def load_id_dict(path, arch_level=False):
+    """
+    Imports the specified CSV file mapping sources to numeric IDs.
+    """
+    mappings = dict()
+    csvfile = open(path)
+    if arch_level:
+        id_count = 0
+        for line in csvfile:
+            key = line.strip('\n').split(',')[0]
+            key = key.split('_')[0]
+            if mappings.has_key(key):
+                continue
+            else:
+                id_count += 1
+                mappings[key] = id_count
+    else:
+        for line in csvfile:
+            (key, val) = line.strip('\n').split(',')
+            mappings[key] = int(val)
+    return mappings

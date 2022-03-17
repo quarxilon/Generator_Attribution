@@ -60,8 +60,10 @@
    - For frequency domain analysis, first calculate the training set statistics using `data_statistics.py` or use those already provided with this repository:
       ```
       python data_statistics.py \
-         dataset/faceshq+/clean/raw/fake dataset/faceshq+/clean/raw/real \
-         dataset/statistics/faceshq+/dctnorm --input_size 7000 --dctnorm
+         dataset/faceshq+/clean/raw/fake \
+         dataset/faceshq+/clean/raw/real \
+         dataset/statistics/faceshq+/dctnorm \
+         --input_size_pos 7000 --input_size_neg 7000 --dctnorm
       ```
       then apply the 2D Discrete Cosine Transform (DCT) using `data_prep.py` with statistics via `--normstats` :
       ```
@@ -78,16 +80,9 @@
 7. For preparing augmented sets, use `data_augment.py` (replace `multi` with `blur, crop, jpeg,` or `noise` for individual image augmentations):
    ```
    python data_augment.py multi \
-      dataset/faceshq+/clean/raw/real \
-      dataset/faceshq+/multi/raw/real \
+      dataset/faceshq+/clean/raw \
+      dataset/faceshq+/multi/raw \
       --seed 2021 --jpeg_output
-
-   python data_augment.py multi \
-      dataset/faceshq+/clean/raw/fake \
-      dataset/faceshq+/multi/raw/fake \
-      --seed 2021 --jpeg_output
-
-   [optional: repeat for fake_testonly]
    ```
    - Repeat step (6) for each augmented set once ready.
    - Augmentations are applied to images with 50% probability.
@@ -132,8 +127,10 @@
    - For frequency domain analysis, first calculate the training set statistics using `data_statistics.py` or use those already provided with this repository:
       ```
       python data_statistics.py \
-         dataset/ganfp/clean/raw/fake dataset/ganfp/clean/raw/real \
-         dataset/statistics/ganfp/dctnorm --input_size 20000 --dctnorm
+         dataset/ganfp/clean/raw/fake \
+         dataset/ganfp/clean/raw/real \
+         dataset/statistics/ganfp/dctnorm \
+         --input_size_pos 20000 --input_size_neg 20000 --dctnorm
       ```
       then apply the 2D Discrete Cosine Transform (DCT) using `data_prep.py` with statistics via `--normstats` :
       ```
@@ -149,13 +146,8 @@
 6. For preparing augmented sets, use `data_augment.py` (replace `multi` with `blur, crop, jpeg,` or `noise` for individual image augmentations):
    ```
    python data_augment.py multi \
-      dataset/ganfp/clean/raw/real \
-      dataset/ganfp/multi/raw/real \
-      --seed 0
-
-   python data_augment.py multi \
-      dataset/ganfp/clean/raw/fake \
-      dataset/ganfp/multi/raw/fake \
+      dataset/ganfp/clean/raw \
+      dataset/ganfp/multi/raw \
       --seed 0
    ```
    - Repeat step (5) for each augmented set once ready.

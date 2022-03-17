@@ -2,13 +2,13 @@
 
 ![Diagram of the classification model proposed in this project. A StyleGAN2-synthesized image is recognized as either real or fake by the classifier. Additionally, the image is also identified as belonging in the output space of StyleGAN2, based on transfer-learned features shared among different instances of the same classifier.](diagrams/Generator_Attribution.png "Diagram of the classification model proposed in this project.")
 
-Code for the (work in progress) paper:
+Code for the paper:
 
 **Transferable Class-Modelling for Decentralized Source Attribution of GAN-Generated Images**
 
-This project proposes a convolutional neural classifier model paradigm that utilizes transfer learning to efficiently attribute "deepfake" images synthesized by generative adversarial networks (GANs) to their specific sources, relative to all other sources, with visually interpretable model behaviour.
+This project proposes a convolutional neural net framework that utilizes transfer learning to efficiently identify "deepfake" images synthesized by generative model sources such as generative adversarial networks (GANs), and attribute them to their specific sources relative to all others.
 
-This method is designed to determine if *deepfake attribution* using the GAN fingerprints-based method pioneered by **[Yu *et al.* (2019)](https://github.com/ningyu1991/GANFingerprints)** and **[Frank *et al.* (2020)](https://github.com/RUB-SysSec/GANDCTAnalysis)** can be successfully performed in a decentralized manner that retains external validity despite limited data in an open-world setting.
+This method was conceived within a series of experiments to determine if reactive *deepfake attribution* using the GAN fingerprints-based method pioneered by **[Yu *et al.* (2019)](https://github.com/ningyu1991/GANFingerprints)** and **[Frank *et al.* (2020)](https://github.com/RUB-SysSec/GANDCTAnalysis)** can be successfully performed in a sustainable and decentralized manner that retains external validity despite limited data in an open-world setting.
 
 TensorFlow 2 (Keras API) is used in this implementation.
 
@@ -20,16 +20,9 @@ TensorFlow 2 (Keras API) is used in this implementation.
 
 # Classifier models
 
-## Baseline models
-
-![Baseline model topology diagrams. On the left is gandct-conv, and on the right is ganfp-postpool. Both have similar final decision layers that vary according to the single scenario which each model instance is trained for, which can be either GAN deepfake detection or image source attribution; the latter can be either a binary (one vs all) or multiclass classification problem.](diagrams/baseline_models.png "Baseline model topology diagrams.")
-
-- **gandct-conv** (`gdaconv`) : The simple convolutional network used by **[Frank *et al.* (2020)](https://github.com/RUB-SysSec/GANDCTAnalysis)** for their experiments on GAN-generated deepfake detection and source image attribution using 2D Discrete Cosine Transform (DCT) spectral analysis.
-- **ganfp-postpool** (`postpool`) : A post-pooling variant of the convolutional network used by **[Yu *et al.* (2019)](https://github.com/ningyu1991/GANFingerprints)** for their GAN Fingerprints experiments. This version starts consecutive average pooling from 32x32 resolution, uses naïve weight initialization, and contains 1/4 of the number of neurons and convolutional kernels per layer to satisfy hardware constraints.
-
 ## Proposed model
 
-![Proposed model topology diagram. Primary layers (shaded red) are trained for deepfake detection, but also reused as feature extractors for image source attribution. Only secondary layers (shaded green) are trained for (binary) attribution. In the case of multiclass attribution, multiple secondary layers are trained independently, each with their own sigmoid outputs and modelling their own image source, with the final prediction obtained via arg max.](diagrams/proposed_model.png "Proposed model topology diagram.")
+![Experimental implementation of the proposed framework. The primary module (red) is trained for deepfake detection, but also reused as the feature extractor for image source attribution. Only the secondary module (green) are trained for (binary one-vs-all) attribution. In the case of multiclass attribution, multiple secondary modules are trained independently, each modelling their own image source with their own (sigmoid) outputs, with the final prediction obtained via arg max.](diagrams/proposed_model.png "Proposed model topology diagram.")
 
 A convolutional neural network based on the gandct-conv model, but with extensive modifications to the architecture informed by the research objective:
   - The model topology branches out midway into primary and secondary layers.
@@ -47,6 +40,13 @@ A convolutional neural network based on the gandct-conv model, but with extensiv
     - This suppresses the prioritization of any specific image region in identifying GAN fingerprints.
     - For DCT input variants, **Grad-CAM** is applied instead.
 
+## Baseline models
+
+![Baseline model topology diagrams. On the left is gandct-conv, and on the right is ganfp-postpool. Both have similar final decision layers that vary according to the single scenario which each model instance is trained for, which can be either GAN deepfake detection or image source attribution; the latter can be either a binary (one vs all) or multiclass classification problem.](diagrams/baseline_models.png "Baseline model topology diagrams.")
+
+- **gandct-conv** (`gdaconv`) : The simple convolutional network used by **[Frank *et al.* (2020)](https://github.com/RUB-SysSec/GANDCTAnalysis)** for their experiments on GAN-generated deepfake detection and source image attribution using 2D Discrete Cosine Transform (DCT) spectral analysis.
+- **ganfp-postpool** (`postpool`) : A post-pooling variant of the convolutional network used by **[Yu *et al.* (2019)](https://github.com/ningyu1991/GANFingerprints)** for their GAN Fingerprints experiments. This version starts consecutive average pooling from 32x32 resolution, uses naïve weight initialization, and contains 1/4 of the number of neurons and convolutional kernels per layer to satisfy hardware constraints.
+
 
 # Training classifiers
 
@@ -62,11 +62,12 @@ For training a classifier model from scratch on the GANFP dataset:
 python classifier.py det \
    -c [model_class] --seed 2021 \
    train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_val \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_train \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_val \
    --model_id [model_id] --instance_id [instance_id] \
    --epochs 100 --image_size 128 --learning_rate 0.001 \
-   --num_sources 5 --batch_size 256 --train_size 20000 --val_size 4000 \
+   --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --train_size 20000 --val_size 4000 \
    --early_stopping [early_stopping]
 ```
 - Replace `[model_class]` with `default` for the proposed model, or `gdaconv` or `postpool` for baseline benchmark classifier topologies.
@@ -78,16 +79,17 @@ python classifier.py det \
 - Change `[model_id]` to whatever identifier you wish to call your trained model by.
 - Change `[instance_id]` to whatever identifier you wish to call this particular trained instance of the model. Default: `[instance_id]` = `[model_id]`.
 - Set `[early_stopping]` to the number of epochs permitted to continue training if validation set loss fails to decrease under early stopping regularization. Default is 5.
-- Equivalent for the FacesHQ+ dataset **(proposed model only)**:
+- Equivalent for the FacesHQ+ dataset **(proposed default model only)**:
    ```
    python classifier.py det \
       -c default --seed 2021 \
       train \
-      dataset/faceshq+/clean/pixel/pixel_colour_raw_normalized_train \
-      dataset/faceshq+/clean/pixel/pixel_colour_raw_normalized_val \
+      dataset/faceshq+/clean/pixel/clean_raw_colour_normalized_train \
+      dataset/faceshq+/clean/pixel/clean_raw_colour_normalized_val \
       --model_id [model_id] --instance_id [instance_id] \
       --epochs 100 --image_size 256 --learning_rate 0.001 \
-      --num_sources 5 --batch_size 128 --train_size 7000 --val_size 1000 \
+      --num_sources 3 --num_real_sources 2 \
+      --batch_size 128 --train_size 7000 --val_size 1000 \
       --early_stopping 10
    ```
 
@@ -96,12 +98,13 @@ For retraining an already trained model instance on an augmented GANFP dataset:
 python classifier.py det \
    -c [model_class] --seed 2021 \
    train \
-   dataset/ganfp/multi/pixel/pixel_colour_raw_normalized_train \
-   dataset/ganfp/multi/pixel/pixel_colour_raw_normalized_val \
+   dataset/ganfp/multi/pixel/multi_raw_colour_normalized_train \
+   dataset/ganfp/multi/pixel/multi_raw_colour_normalized_val \
    --model trained_models/[model_id]/[instance_id].h5 \
    --model_id [model_id] --instance_id [instance_id] \
    --epochs 100 --image_size 128 --learning_rate 0.001 \
-   --num_sources 5 --batch_size 256 --train_size 20000 --val_size 4000 \
+   --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --train_size 20000 --val_size 4000 \
    --early_stopping [early_stopping]
 ```
 - Equivalent for the FacesHQ+ dataset:
@@ -109,27 +112,29 @@ python classifier.py det \
    python classifier.py det \
       -c default --seed 2021 \
       train \
-      dataset/faceshq+/multi/pixel/pixel_colour_raw_normalized_train \
-      dataset/faceshq+/multi/pixel/pixel_colour_raw_normalized_val \
+      dataset/faceshq+/multi/pixel/multi_raw_colour_normalized_train \
+      dataset/faceshq+/multi/pixel/multi_raw_colour_normalized_val \
       --model trained_models/[model_id]/[instance_id].h5 \
       --model_id [model_id] --instance_id [instance_id] \
       --epochs 100 --image_size 256 --learning_rate 0.001 \
-      --num_sources 5 --batch_size 128 --train_size 7000 --val_size 1000 \
+      --num_sources 3 --num_real_sources 2 \
+      --batch_size 128 --train_size 7000 --val_size 1000 \
       --early_stopping 10
    ```
 
 ## Image source attribution
 
-For training a baseline benchmark classifier from scratch on the GANFP dataset:
+For training the baseline models from scratch on the GANFP dataset:
 ```
 python classifier.py att \
    -c [model_class] --seed 2021 \
    train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_val \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_train \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_val \
    --model_id [model_id] --instance_id [instance_id] \
    --epochs 100 --image_size 128 --learning_rate 0.0001 \
-   --num_sources 5 --batch_size 256 --train_size 20000 --val_size 4000 \
+   --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --train_size 20000 --val_size 4000 \
    --arch_level --source [source] --early_stopping [early_stopping]
 ```
 
@@ -138,34 +143,37 @@ For training the proposed model from scratch on the GANFP dataset **(requires pr
 python classifier.py att \
    -c default --seed 2021 \
    train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_val \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_train \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_val \
    --det_model trained_models/[model_id]/[instance_id].h5 \
    --model_id [model_id] --instance_id [instance_id] \
    --epochs 100 --image_size 128 --learning_rate 0.0001 \
-   --num_sources 5 --batch_size 256 --train_size 20000 --val_size 4000 \
+   --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --train_size 20000 --val_size 4000 \
    --arch_level --source [source] --early_stopping [early_stopping]
 ```
-- Replace `[source]` with whatever **source of interest** you want your classifier to model:
+- Replace `[source]` with whatever **source of interest** you want this instance to model:
   - GANFP: `sngan_celeba, progan_celeba, mmdgan_celeba, cramergan_celeba`
   - FacesHQ+: `stylegan_tpdne, stylegan_100k, stylegan2_tpdne`
 - Omit `--arch_level` for FacesHQ+ if you want your model to distinguish between `stylegan_tpdne` and `stylegan_100k`.
-- **(Required for proposed model)** Load pretrained primary layers from existing model via `--det_model` .
-- For retraining on an augmented dataset, load existing model via `--model` .
+- **(Required)** Load primary module from existing model via `--det_model` .
+- For retraining on augmented datasets, reload existing model via `--model` .
 
 ## Image source attribution (multiclass)
 
-Firstly, uncomment the appropriate `SOURCE_LABEL_DICT` and `SOURCE_LIST` constants in `classifier.py` depending on which dataset (FacesHQ+/GANFP) is being used, and comment out the other.
+Firstly, load the `source_ids.csv` files (included) in the main directory of each dataset, e.g. `dataset/ganfp/source_ids.csv`.
 ```
 python classifier.py att \
    -c [model_class] --seed 2021 \
    train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_train \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_val \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_train \
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_val \
    --model_id [model_id] --instance_id [instance_id] \
    --epochs 100 --image_size 128 --learning_rate 0.0001 \
-   --num_sources 5 --batch_size 256 --train_size 20000 --val_size 4000 \
-   --multiclass --early_stopping [early_stopping]
+   --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --train_size 20000 --val_size 4000 \
+   --multiclass --early_stopping [early_stopping] \
+   --source_list dataset/ganfp/source_ids.csv
 ```
 - Do not use `--source` or `--arch_level` .
 
@@ -175,7 +183,7 @@ python classifier.py att \
 This procedure outputs the following in `test_results`:
 - Classifier model predictions on the provided test set (both raw and categorized)
 - Ground truth labels supplied by test set
-- Confusion matrix graphic(s) with classification performance metrics
+- Confusion matrices with classification performance metrics
 
 ## Deepfake detection
 
@@ -185,13 +193,13 @@ python classifier.py det \
    -c [model_class] --seed 2021 \
    test \
    trained_models/[model_id]/[instance_id].h5 \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_test \
-   --image_size 128 --num_sources 5 --batch_size 256 \
-   --test_size 6000
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_test \
+   --image_size 128 --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --test_size 6000
 ```
 - Replace `[model_class]` with `default` for the proposed model, or `gdaconv` or `postpool` for baseline benchmark classifier topologies.
 - Provide the paths to the trained model and test set respectively.
-- (FacesHQ+ dataset) To evaluate the model on out-of-distribution data, replace the test set path with `dataset/faceshq+/clean/pixel/pixel_..._test_only` , set `--num_sources` to `1` , and set `--image_size` and `--test_size` to FacesHQ+ appropriate values. Note that the output confusion matrix graphics will look odd due to the imbalanced dataset.
+- (FacesHQ+ dataset) To evaluate the model on out-of-distribution data, replace the test set path with `dataset/faceshq+/clean/pixel/clean_..._test_only` , set `--num_sources` and `--num_real_sources` to `1` and `0` respectively, and set `--image_size` and `--test_size` to FacesHQ+ appropriate values. Note that the test report graphics will look odd due to the imbalanced dataset.
 
 For testing a trained DCT input classifier model on a JPEG compression-augmented GANFP dataset:
 ```
@@ -199,9 +207,9 @@ python classifier.py det \
    -c [model_class] --dct --seed 2021 \
    test \
    trained_models/[model_id]/[instance_id].h5 \
-   dataset/ganfp/jpeg/dct/dct_dct_log_scaled_normalized_test \
-   --image_size 128 --num_sources 5 --batch_size 256 \
-   --test_size 6000
+   dataset/ganfp/jpeg/dct/jpeg_dct_log_scaled_normalized_test \
+   --image_size 128 --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --test_size 6000
 ```
 
 ## Image source attribution
@@ -212,26 +220,27 @@ python classifier.py att \
    -c [model_class] --seed 2021 \
    test \
    trained_models/[model_id]/[instance_id].h5 \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_test \
-   --image_size 128 --num_sources 5 --batch_size 256 \
-   --test_size 6000 --arch_level --source [source]
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_test \
+   --image_size 128 --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --test_size 6000 --arch_level --source [source]
 ```
-- Replace `[source]` with the **source of interest** that your selected binary attribution model is trained to identify:
+- Replace `[source]` with the **source of interest** that your selected model instance is trained to identify:
   - GANFP: `sngan_celeba, progan_celeba, mmdgan_celeba, cramergan_celeba`
   - FacesHQ+: `stylegan_tpdne, stylegan_100k, stylegan2_tpdne`
 - Omit `--arch_level` for FacesHQ+ if your model is trained to distinguish between `stylegan_tpdne` and `stylegan_100k`.
 
 ## Image source attribution (multiclass)
 
-Firstly, uncomment the appropriate `SOURCE_LABEL_DICT` and `SOURCE_LIST` constants in `classifier.py` depending on which dataset (FacesHQ+/GANFP) is being used, and comment out the other.
+Firstly, load the `source_ids.csv` files (included) in the main directory of each dataset, e.g. `dataset/ganfp/source_ids.csv`.
 ```
 python classifier.py att \
    -c [model_class] --seed 2021 \
    test \
    trained_models/[model_id]/[instance_id].h5 \
-   dataset/ganfp/clean/pixel/pixel_colour_raw_normalized_test \
-   --image_size 128 --num_sources 5 --batch_size 256 \
-   --test_size 6000 --multiclass
+   dataset/ganfp/clean/pixel/clean_raw_colour_normalized_test \
+   --image_size 128 --num_sources 4 --num_real_sources 1 \
+   --batch_size 256 --test_size 6000 --multiclass \
+   --source_list dataset/ganfp/source_ids.csv
 ```
 - Do not use `--source` or `--arch_level` .
 
@@ -265,14 +274,14 @@ For calling **already-trained classifier models** for immediate inference on any
       --batch_size [batch_size] --image_size [image_size] \
       --source [source]
    ```
-   - Replace `[source]` with the **source of interest** that your selected binary attribution model is trained to identify (for output formatting only).
+   - Replace `[source]` with the **source of interest** that your selected model instance is trained to identify (for output formatting only).
    - Multiclass attribution is currently unsupported.
 4. Inference results are saved as images in `run_outputs/[dataset_id]` in individually timestamped folders for each run.
 
 
 # Pretrained models
 
-Coming soon!
+Coming soon...
 
 
 # Acknowledgements

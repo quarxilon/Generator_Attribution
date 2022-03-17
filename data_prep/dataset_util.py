@@ -10,12 +10,8 @@ def _find_images(data_path):
     """
     Returns list of filepaths for all images in the data_path folder.
     """
-    paths = list(Path(data_path).glob("*.jpeg"))
-    if len(paths) == 0:
-        paths = list(Path(data_path).glob("*.jpg"))
-    if len(paths) == 0:
-        paths = list(Path(data_path).glob("*.png"))
-    return paths
+    paths = list(Path(data_path).iterdir())
+    return filter(lambda p: p.is_file(), paths)
 
 
 def image_paths(data_path):

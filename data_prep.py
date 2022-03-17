@@ -21,8 +21,8 @@ from data_prep.maths import log_scale, welford
 Script to convert raw RGB images (post-augmentation) into numpy or tfrecord datasets.
 
 Convention:
-    Real images and binary attribution negatives use int label 0.
-    Fake images and binary attribution positives use int label 1.
+    Real images and negative attributions use int label 0.
+    Fake images and positive attributions use int label 1.
 """
 
 
@@ -65,7 +65,7 @@ def _get_source_label(image_path):
         return f"{source_label[0]}_{source_label[1]}"
 
 
-def _collect_image_paths(directory):
+def _collect_image_paths(directory, size_factor=1):
     """
     Collects the filepaths to every image in a specific directory (individual image sources).
     Returns a train/val/test tuple of lists of absolute Paths to the images.
@@ -73,26 +73,30 @@ def _collect_image_paths(directory):
     followed by the next VAL_SIZE images as the validation set,
     and then the next TEST_SIZE images as the test set.
     """
+    assert (size_factor >= 1), "size_factor cannot be zero or negative!"
     images = list(sorted(image_paths(directory), key=_get_image_id))
-    assert (len(images) >= (TRAIN_SIZE + VAL_SIZE + TEST_SIZE)), \
-        f"Insufficient images in {directory}! {len(images)} < {(TRAIN_SIZE + VAL_SIZE + TEST_SIZE)}"
+    assert (len(images) >= ((TRAIN_SIZE + VAL_SIZE + TEST_SIZE) * size_factor)), \
+        f"Insufficient images in {directory}! {len(images)} < {(TRAIN_SIZE + VAL_SIZE + TEST_SIZE) * size_factor}"
 
-    train_dataset = images[:TRAIN_SIZE]
-    val_dataset = images[TRAIN_SIZE: (TRAIN_SIZE + VAL_SIZE)]
-    test_dataset = images[(TRAIN_SIZE + VAL_SIZE): 
-                          (TRAIN_SIZE + VAL_SIZE + TEST_SIZE)]
+    train_dataset = images[:(TRAIN_SIZE * size_factor)]
+    val_dataset = images[(TRAIN_SIZE * size_factor): ((TRAIN_SIZE + VAL_SIZE) * size_factor)]
+    test_dataset = images[((TRAIN_SIZE + VAL_SIZE) * size_factor): 
+                          ((TRAIN_SIZE + VAL_SIZE + TEST_SIZE) * size_factor)]
 
     return (train_dataset, val_dataset, test_dataset)
 
 
-def _collect_test_only_image_paths(directory):
+def _collect_test_only_image_paths(directory, full_size=False):
     """
     Same as _collect_image_paths, but only handles out-of-distribution test sets.
     """
     images = list(sorted(image_paths(directory), key=_get_image_id))
-    assert (len(images) >= TEST_SIZE), \
-        f"Insufficient images in {directory}! {len(images)} < {TEST_SIZE}"
-    test_dataset = images[:TEST_SIZE]
+    if full_size:
+        test_dataset = images
+    else:
+        assert (len(images) >= TEST_SIZE), \
+            f"Insufficient images in {directory}! {len(images)} < {TEST_SIZE}"
+        test_dataset = images[:TEST_SIZE]
     return test_dataset
 
 
@@ -109,7 +113,7 @@ def _dct2_wrapper(image, log=False):
     return image
 
 
-def collect_all_paths(pos_dirs, neg_dirs, shuffle=True):
+def collect_all_paths(pos_dirs, neg_dirs, size_factor=1, shuffle=True):
     
     """
     Collects the filepaths to every image in the positively 
@@ -137,9 +141,9 @@ def collect_all_paths(pos_dirs, neg_dirs, shuffle=True):
     val_dataset = []
     test_dataset = []
     
-    def assemble_datasets(directories, label):
+    def assemble_datasets(directories, label, sf):
         for directory in directories:
-            train, val, test = _collect_image_paths(directory)
+            train, val, test = _collect_image_paths(directory, size_factor=sf)
             train = zip(train, [label] * len(train))
             val = zip(val, [label] * len(val))
             test = zip(test, [label] * len(test))
@@ -148,8 +152,8 @@ def collect_all_paths(pos_dirs, neg_dirs, shuffle=True):
             test_dataset.extend(test)
             del train, val, test
 
-    assemble_datasets(pos_directories, POSITIVE_LABEL)
-    assemble_datasets(neg_directories, NEGATIVE_LABEL)
+    assemble_datasets(pos_directories, POSITIVE_LABEL, 1)
+    assemble_datasets(neg_directories, NEGATIVE_LABEL, size_factor)
         
     train_dataset = np.asarray(train_dataset)
     val_dataset = np.asarray(val_dataset)
@@ -163,12 +167,13 @@ def collect_all_paths(pos_dirs, neg_dirs, shuffle=True):
     return train_dataset, val_dataset, test_dataset
 
 
-def collect_test_only_paths(test_only_dirs, test_only_positive=True, shuffle=True):
+def collect_test_only_paths(test_only_dirs, test_only_positive=True, full_size=False, shuffle=True):
     
     """
     Same as collect_all_paths, but only handles out-of-distribution test sets.
     
     Set test_only_positive=False if the test-only sets should be negatively labelled.
+    Set full_size=True if all available examples per test-only source should be used.
     
     Datasets are randomly shuffled according to the numpy random seed used.
     Set shuffle=False if shuffling is not desired.
@@ -180,7 +185,7 @@ def collect_test_only_paths(test_only_dirs, test_only_positive=True, shuffle=Tru
     test_only_dataset = []
     
     for i, directory in enumerate(test_only_directories):
-        test = _collect_test_only_image_paths(directory)
+        test = _collect_test_only_image_paths(directory, full_size=full_size)
         if test_only_positive:
             test = zip(test, [POSITIVE_LABEL] * len(test))
         else:
@@ -276,7 +281,7 @@ def create_directory_tf(output_path, images, convert_function):
 
 
 def normal_mode(pos_directory, neg_directory, convert_function, output_path, 
-                test_only_directory=None):
+                test_only_directory=None, size_factor=1, full_size=False):
     
     """
     Applies create_directory_np (which in turn applies convert_function) to all outputs of collect_all_paths.
@@ -284,10 +289,10 @@ def normal_mode(pos_directory, neg_directory, convert_function, output_path,
     """
     
     (train_dataset, val_dataset, test_dataset) = \
-        collect_all_paths(pos_directory, neg_directory)
+        collect_all_paths(pos_directory, neg_directory, size_factor=size_factor)
     if test_only_directory is not None:
         test_only_dataset = collect_test_only_paths(
-            test_only_directory, test_only_positive=True)
+            test_only_directory, test_only_positive=True, full_size=full_size)
     
     create_directory_np(f"{output_path}_train", train_dataset, convert_function)
     print("\nConverted training images!")
@@ -300,8 +305,8 @@ def normal_mode(pos_directory, neg_directory, convert_function, output_path,
         print("\nConverted testing images (out-of-distribution set)!")
 
 
-def tfmode(pos_directory, neg_directory, convert_function, 
-           output_path, test_only_directory=None):
+def tfmode(pos_directory, neg_directory, convert_function, output_path, 
+           test_only_directory=None, size_factor=1, full_size=False):
     
     """
     Applies create_directory_tf (which in turn applies convert_function) to all outputs of collect_all_paths.
@@ -310,10 +315,10 @@ def tfmode(pos_directory, neg_directory, convert_function,
     """
     
     (train_dataset, val_dataset, test_dataset) = \
-        collect_all_paths(pos_directory, neg_directory)
+        collect_all_paths(pos_directory, neg_directory, size_factor=size_factor)
     if test_only_directory is not None:
         test_only_dataset = collect_test_only_paths(
-            test_only_directory, test_only_positive=True)
+            test_only_directory, test_only_positive=True, full_size=full_size)
     
     create_directory_tf(f"{output_path}_train_tf", train_dataset, convert_function)
     print("\nConverted training images!")
@@ -339,7 +344,7 @@ def main(args):
     if args.test_size != TEST_SIZE:
         TEST_SIZE = args.test_size
     
-    output = Path(args.OUT_DIRECTORY).stem
+    output = Path(args.OUT_DIRECTORY).parent.stem
     
     load_function = functools.partial(load_image, tf=(args.mode == "tfrecords"))
     transformation_function = None
@@ -378,7 +383,7 @@ def main(args):
             # scale each DCT spectrum by its max absolute value
             # based on the first half of the full training set
             train, _, _ = collect_all_paths(
-                args.POS_DIRECTORY, args.NEG_DIRECTORY)
+                args.POS_DIRECTORY, args.NEG_DIRECTORY, size_factor=args.real_factor)
             train = train[: (len(train) * 0.5)]
             images = map(lambda x: x[0], train)
             images = map(load_function, images)
@@ -406,7 +411,7 @@ def main(args):
             else:
                 # normalize using welford method over full training set
                 train, _, _ = collect_all_paths(
-                    args.POS_DIRECTORY, args.NEG_DIRECTORY)
+                    args.POS_DIRECTORY, args.NEG_DIRECTORY, size_factor=args.real_factor)
                 images = map(lambda x: x[0], train)
                 images = map(load_function, images)
                 images = map(transformation_function, images)
@@ -431,10 +436,12 @@ def main(args):
     
     if args.mode == "normal":
         normal_mode(args.POS_DIRECTORY, args.NEG_DIRECTORY, convert_function, 
-                    output, test_only_directory=args.test_only_directory)
+                    output, test_only_directory=args.test_only_directory,
+                    size_factor=args.real_factor, full_size=args.full_test_only)
     elif args.mode == "tfrecords":
         tfmode(args.POS_DIRECTORY, args.NEG_DIRECTORY, convert_function, 
-               output, test_only_directory=args.test_only_directory)
+               output, test_only_directory=args.test_only_directory,
+               size_factor=args.real_factor, full_size=args.full_test_only)
 
 
 def parse_args():
@@ -447,28 +454,33 @@ def parse_args():
     parser.add_argument(
         "OUT_DIRECTORY", help="Directory to save converted dataset.", type=str)
     parser.add_argument(
-        "--raw", "-r", help="Save image data as raw image instead of as DCT coefficients.", action="store_true")
+        "--raw", "-r", help="FLAG: Save image data as raw image instead of as DCT coefficients.", action="store_true")
     parser.add_argument(
-        "--log", "-l", help="Log scale images (DCT coefficients only).", action="store_true")
+        "--log", "-l", help="FLAG: Log scale images (DCT coefficients only).", action="store_true")
     parser.add_argument(
-        "--abs", "-a", help="Scale each feature by its max absolute value.", action="store_true")
+        "--abs", "-a", help="FLAG: Scale each feature by its max absolute value.", action="store_true")
     parser.add_argument(
-        "--colour", "-c", help="Compute as RGB instead of greyscale.", action="store_true")
+        "--colour", "-c", help="FLAG: Compute as RGB instead of greyscale.", action="store_true")
     parser.add_argument(
-        "--normalize", "-n", help="Normalize data.", action="store_true")
+        "--normalize", "-n", help="FLAG: Normalize data.", action="store_true")
     parser.add_argument(
-        "--normstats", help="Directory of mean/var/std for log-norm DCT coefficients.", type=str, default=None)
+        "--normstats", "-p", help="Directory of mean/var/std for log-norm DCT coefficients.", type=str, default=None)
     parser.add_argument(
         "--seed", "-s", help="Random seed for shuffling the dataset.", type=int, default=0)
     parser.add_argument(
         "--test_only_directory", "-t", default=None,
         help="Directory of dataset (out-of-distribution portion) to convert.", type=str)
     parser.add_argument(
-        "--train_size", help="Training set size per source (class). Default: 7000", type=int, default=7000)
+        "--full_test_only", action="store_true",
+        help="FLAG: Use all available examples for test-only and adversarial sources.")
     parser.add_argument(
-        "--val_size", help="Validation set size per source (class). Default: 1000", type=int, default=1000)
+        "--train_size", help="Training set size per source. Default: 7000", type=int, default=7000)
     parser.add_argument(
-        "--test_size", help="Testing set size per source (class). Default: 2000", type=int, default=2000)
+        "--val_size", help="Validation set size per source. Default: 1000", type=int, default=1000)
+    parser.add_argument(
+        "--test_size", help="Testing set size per source. Default: 2000", type=int, default=2000)
+    parser.add_argument(
+        "--real_factor", help="Dataset size multiplier for \'real\' sources. Default: 1", type=int, default=1)
     
 
     modes = parser.add_subparsers(help="Select the mode {normal|tfrecords}", dest="mode")

@@ -9,7 +9,6 @@ import random
 import datetime as dt
 import numpy as np
 import tensorflow as tf
-import seaborn as sb
 import matplotlib.pyplot as plt
 
 from tqdm.keras import TqdmCallback
@@ -17,7 +16,7 @@ from pathlib import Path
 from tensorflow import keras
 from sklearn.metrics import confusion_matrix
 
-from data_prep.numpy_data_gen import DataGenerator
+from data_prep.numpy_data_gen import (DataGenerator, load_id_dict)
 from classifier.models import (build_detection_model,
                                build_attribution_model,
                                build_multiclass_attribution_model)
@@ -35,35 +34,19 @@ Primary script to train and test all classifier models.
 
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
+STRATEGY = tf.distribute.MirroredStrategy()
 
 # Global parameters
 BATCH_SIZE = 256
 TRAIN_SIZE = 7000
 VAL_SIZE = 1000
 TEST_SIZE = 2000
-NUM_SOURCES = 5
+NUM_REAL_SOURCES = 1
+NUM_FAKE_SOURCES = 4
+REAL_FACTOR = 1
 INPUT_SHAPE = (256, 256, 3)
 SEED = 2021
 THRESHOLD = 0.5
-
-# for FacesHQ+ dataset
-SOURCE_LABEL_DICT = {
-    "stylegan_tpdne"    : 1,
-    "stylegan_100k"     : 2,
-    "stylegan2_tpdne"   : 3
-}
-SOURCE_LIST = ["SG1-TPDNE", "SG1-100K", "SG2-TPDNE"]
-
-"""
-# for GAN Fingerprints dataset
-SOURCE_LABEL_DICT = {
-    "sngan_celeba"      : 1,
-    "progan_celeba"     : 2,
-    "mmdgan_celeba"     : 3,
-    "cramergan_celeba"  : 4
-}
-SOURCE_LIST = ["SNGAN", "ProGAN", "MMDGAN", "CramerGAN"]
-"""
 
 
 def timestamp():
@@ -87,11 +70,11 @@ def _get_size(train=True, val=False):
         The default is False.
     """
     if val:
-        size = VAL_SIZE * NUM_SOURCES
+        size = (VAL_SIZE * NUM_FAKE_SOURCES) + ((VAL_SIZE * REAL_FACTOR) * NUM_REAL_SOURCES)
     elif train:
-        size = TRAIN_SIZE * NUM_SOURCES
+        size = (TRAIN_SIZE * NUM_FAKE_SOURCES) + ((TRAIN_SIZE * REAL_FACTOR) * NUM_REAL_SOURCES)
     else:
-        size = TEST_SIZE * NUM_SOURCES
+        size = (TEST_SIZE * NUM_FAKE_SOURCES) + ((TEST_SIZE * REAL_FACTOR) * NUM_REAL_SOURCES)
     return size
 
 
@@ -125,7 +108,7 @@ def init_tf(args):
 def load_numpy_detection(path, train=True, val=False, shuffle=True):
     
     """
-    Configures and returns a minibatch loader (datagen) for the deepfake detection task.
+    Configures and returns a minibatch loader for the deepfake detection task.
     
     Parameters
     ----------
@@ -154,19 +137,20 @@ def load_numpy_detection(path, train=True, val=False, shuffle=True):
     return datagen
 
 
-def load_numpy_attribution(path, source=None, arch_level=False, 
-                           train=True, val=False, shuffle=True, 
-                           baseline_model=False, multiclass=False):
+def load_numpy_attribution(path, source=None, source_list=None, arch_level=False, train=True, 
+                           val=False, shuffle=True, baseline=False, multiclass=False):
     
     """
-    Configures and returns a minibatch loader (datagen) for the image source attribution task.
+    Configures and returns a minibatch loader for the image source attribution task.
     
     Parameters
     ----------
     path : str
         Filepath to preprocessed dataset (numpy array format) directory.
     source : str
-        Designated source of interest label for binary attribution. Not required for multiclass attribution.
+        Designated source of interest label for binary attribution.
+    source_list : dict
+        Dictionary of source ID mappings for multiclass attribution.
     arch_level : bool, optional
         Whether to only attempt attribution at the source generator architecture level.
         The default is False.
@@ -179,7 +163,7 @@ def load_numpy_attribution(path, source=None, arch_level=False,
     shuffle : bool, optional
         Whether to randomly shuffle the dataset after every epoch.
         The default is True.
-    baseline_model : bool, optional
+    baseline : bool, optional
         Whether to configure the minibatch loader for baseline classifiers.
         The default is False.
     multiclass : bool, optional
@@ -188,44 +172,33 @@ def load_numpy_attribution(path, source=None, arch_level=False,
     """
     
     size = _get_size(train=train, val=val)
-    if not (baseline_model and not multiclass):
+    source_labels = np.load(f"{path}/source_labels.npy")
+    if not (baseline and not multiclass):
         labels = np.load(f"{path}/labels.npy")
         if len(labels) > size:
             labels = labels[:size]
-    source_labels = np.load(f"{path}/source_labels.npy")
     if len(source_labels) > size:
         source_labels = source_labels[:size]
     
     if multiclass:
         source = "MULTICLASS"
-        if baseline_model:
-            datagen = DataGenerator(
-                path, size, labels=labels, input_shape=INPUT_SHAPE, 
-                batch_size=BATCH_SIZE, shuffle=shuffle, seed=SEED, 
-                attribution=True, source_labels=source_labels, 
-                baseline_model=True, multiclass=True, 
-                source_label_dict=SOURCE_LABEL_DICT)
-        else:
-            datagen = DataGenerator(
-                path, size, labels=labels, input_shape=INPUT_SHAPE, 
-                batch_size=BATCH_SIZE, shuffle=shuffle, seed=SEED, 
-                attribution=True, source_labels=source_labels, 
-                multiclass=True, source_label_dict=SOURCE_LABEL_DICT)
-    elif baseline_model:
-        datagen = DataGenerator(
-            path, size, input_shape=INPUT_SHAPE, batch_size=BATCH_SIZE, 
-            shuffle=shuffle, seed=SEED, attribution=True, 
-            source_labels=source_labels, chosen_source=source, 
-            arch_level=arch_level, baseline_model=True)
+        generator = DataGenerator(
+            path, size, labels=labels, input_shape=INPUT_SHAPE, batch_size=BATCH_SIZE, 
+            shuffle=shuffle, seed=SEED, attribution=True, source_labels=source_labels,
+            baseline=baseline, multiclass=True, source_id_dict=source_list)
+    elif baseline:
+        generator = DataGenerator(
+            path, size, input_shape=INPUT_SHAPE, batch_size=BATCH_SIZE, shuffle=shuffle, seed=SEED, 
+            attribution=True, source_labels=source_labels, chosen_source=source, arch_level=arch_level, 
+            baseline=True)
     else:
-        datagen = DataGenerator(
-            path, size, labels=labels, input_shape=INPUT_SHAPE, 
-            batch_size=BATCH_SIZE, shuffle=shuffle, seed=SEED, 
-            attribution=True, source_labels=source_labels, 
+        generator = DataGenerator(
+            path, size, labels=labels, input_shape=INPUT_SHAPE, batch_size=BATCH_SIZE, 
+            shuffle=shuffle, seed=SEED, attribution=True, source_labels=source_labels, 
             chosen_source=source, arch_level=arch_level)
-            
+        
     print(f"Dataset initialized! Designated source: {source}")
-    return datagen
+    return generator
 
 
 def build_model(args):
@@ -246,11 +219,10 @@ def build_model(args):
     
     # initialization
     input_shape = INPUT_SHAPE
-    mirrored_strategy = tf.distribute.MirroredStrategy()
     learning_rate = args.learning_rate
     initializer = keras.initializers.RandomNormal(stddev=0.02, seed=args.seed)
 
-    with mirrored_strategy.scope():
+    with STRATEGY.scope():
         
         # DEEPFAKE DETECTION MODE
         if args.MODEL_TYPE == "det":
@@ -265,14 +237,14 @@ def build_model(args):
         else:
             if args.model_class == "gdaconv":
                 model = build_gandctanalysis_simple_cnn(
-                    input_shape, ((len(SOURCE_LABEL_DICT)+1) if args.multiclass else 1), initializer)
+                    input_shape, ((NUM_FAKE_SOURCES + NUM_REAL_SOURCES) if args.multiclass else 1), initializer)
             elif args.model_class == "postpool":
                 model = build_ganfingerprints_postpool_cnn(
-                    input_shape, ((len(SOURCE_LABEL_DICT)+1) if args.multiclass else 1), initializer, alpha=0.2)
+                    input_shape, ((NUM_FAKE_SOURCES + NUM_REAL_SOURCES) if args.multiclass else 1), initializer, alpha=0.2)
             else:
                 if args.multiclass:
                     model = build_multiclass_attribution_model(
-                        input_shape, num_sources=len(SOURCE_LABEL_DICT), init=initializer, gap=not(args.dct))
+                        input_shape, num_sources=NUM_FAKE_SOURCES, init=initializer, gap=not(args.dct))
                 else:
                     model = build_attribution_model(input_shape, init=initializer, gap=not(args.dct))
                     
@@ -298,7 +270,7 @@ def build_model(args):
         if args.model_class == "default" and args.MODEL_TYPE == "att":
             if args.multiclass:
                 losses = [loss]
-                for i in range(len(SOURCE_LABEL_DICT)):
+                for i in range(NUM_FAKE_SOURCES):
                     losses.append(loss)
                 model.compile(optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
                               loss=losses, metrics=[metric])
@@ -331,9 +303,8 @@ def load_trained_model(args):
         Model instance ID.
     """
     
-    mirrored_strategy = tf.distribute.MirroredStrategy()
     model_path = args.model if (args.mode == "train") else args.MODEL
-    with mirrored_strategy.scope():
+    with STRATEGY.scope():
         model = keras.models.load_model(model_path)
     if args.mode == "train": # training mode
         model_id = Path(model_path).stem if (args.model_id is None) else args.model_id
@@ -352,30 +323,32 @@ def train_model(args):
     
     # CONFIGURE MINIBATCH LOADER
     if args.MODEL_TYPE == "det": # DEEPFAKE DETECTION MODE
-        train_datagen = load_numpy_detection(args.TRAIN_DATASET)
-        val_datagen = load_numpy_detection(args.VAL_DATASET, val=True)
+        train_data = load_numpy_detection(args.TRAIN_DATASET)
+        val_data = load_numpy_detection(args.VAL_DATASET, val=True)
         
     elif args.model_class in ("gdaconv", "postpool"): # baseline classifier architectures
         if args.multiclass: # multiclass attribution mode
-            train_datagen = load_numpy_attribution(
-                args.TRAIN_DATASET, baseline_model=True, multiclass=True)
-            val_datagen = load_numpy_attribution(
-                args.VAL_DATASET, val=True, baseline_model=True, multiclass=True)
+            train_data = load_numpy_attribution(
+                args.TRAIN_DATASET, source_list=load_id_dict(args.source_list),
+                baseline=True, multiclass=True)
+            val_data = load_numpy_attribution(
+                args.VAL_DATASET, source_list=load_id_dict(args.source_list),
+                val=True, baseline=True, multiclass=True)
         else: # binary attribution mode
-            train_datagen = load_numpy_attribution(args.TRAIN_DATASET, source=args.source, 
-                                                   arch_level=args.arch_level, baseline_model=True)
-            val_datagen = load_numpy_attribution(args.VAL_DATASET, source=args.source, 
-                                                 arch_level=args.arch_level, val=True, baseline_model=True)
+            train_data = load_numpy_attribution(args.TRAIN_DATASET, source=args.source, 
+                                                arch_level=args.arch_level, baseline=True)
+            val_data = load_numpy_attribution(args.VAL_DATASET, source=args.source, 
+                                              arch_level=args.arch_level, val=True, baseline=True)
             
     else: # multilabel attribution using default model
         if args.multiclass:
-            train_datagen = load_numpy_attribution(args.TRAIN_DATASET, multiclass=True)
-            val_datagen = load_numpy_attribution(args.VAL_DATASET, val=True, multiclass=True)
+            train_data = load_numpy_attribution(
+                args.TRAIN_DATASET, source_list=load_id_dict(args.source_list), multiclass=True)
+            val_data = load_numpy_attribution(
+                args.VAL_DATASET, source_list=load_id_dict(args.source_list), val=True, multiclass=True)
         else:
-            train_datagen = load_numpy_attribution(
-                args.TRAIN_DATASET, source=args.source, arch_level=args.arch_level)
-            val_datagen = load_numpy_attribution(
-                args.VAL_DATASET, source=args.source, arch_level=args.arch_level, val=True)
+            train_data = load_numpy_attribution(args.TRAIN_DATASET, source=args.source, arch_level=args.arch_level)
+            val_data = load_numpy_attribution(args.VAL_DATASET, source=args.source, val=True, arch_level=args.arch_level)
     # END CONFIGURE MINIBATCH LOADER
     
     # BUILD NEW MODEL OR LOAD TRAINED MODEL
@@ -416,10 +389,10 @@ def train_model(args):
     
     # TRAIN AND VALIDATE MODEL
     model.summary()
-    model.fit(train_datagen, epochs=args.epochs, steps_per_epoch=_get_num_batches_per_epoch(),
-              verbose=0, callbacks=callbacks, validation_data=val_datagen,
-              validation_freq=1, validation_steps=_get_num_batches_per_epoch(val=True))
-    model_loss = model.evaluate(val_datagen, steps=_get_num_batches_per_epoch(val=True), verbose=1)[0]
+    model.fit(train_data, epochs=args.epochs, steps_per_epoch=_get_num_batches_per_epoch(),
+              verbose=0, callbacks=callbacks, validation_data=val_data, validation_freq=1, 
+              validation_steps=_get_num_batches_per_epoch(val=True))
+    model_loss = model.evaluate(val_data, steps=_get_num_batches_per_epoch(val=True), verbose=1)[0]
     
     # SAVE TRAINED MODEL
     print(f"Saving model to {model_dir} with overall loss: {model_loss:.4f}")
@@ -453,7 +426,7 @@ def process_test_results(out_path, labels, predictions, mode=1, source="SoI", te
         names = ["True negatives","False positives","False negatives","True positives"]
         categories = ["Others", source]
     elif mode == 3:
-        categories = ["REAL", *SOURCE_LIST]
+        categories = ["REAL", *source.keys()] if isinstance(source, dict) else ["REAL", "FAKE"]
     else:
         names = ["True REAL","False FAKE","False REAL","True FAKE"]
         categories = ["REAL", "FAKE"]
@@ -490,7 +463,7 @@ def process_test_results(out_path, labels, predictions, mode=1, source="SoI", te
             make_confusion_matrix(scmat, group_names=secondary_names, categories=secondary_categories,
                                   extra_text=compute_stupid(predictions, secondary_predictions))
         elif mode == 5:
-            secondary_categories = ["REAL", *SOURCE_LIST]
+            secondary_categories = ["REAL", *source.keys()] if isinstance(source, dict) else ["REAL", "FAKE"]
             make_confusion_matrix(scmat, figsize=(10,7), categories=secondary_categories,
                                   extra_text=compute_stupid(predictions, secondary_predictions))
         plt.savefig(out_path.joinpath(f"ATT_{test_id}.png").__str__())
@@ -503,26 +476,30 @@ def test_model(args):
     Testing procedure.
     """
     
+    if args.multiclass:
+        source_list = load_id_dict(args.source_list, arch_level=args.arch_level)
+    
     # CONFIGURE MINIBATCH LOADER
     if args.MODEL_TYPE == "det": # DEEPFAKE DETECTION MODE
-        test_datagen = load_numpy_detection(args.TEST_DATASET, train=False, shuffle=False)
+        test_data = load_numpy_detection(args.TEST_DATASET, train=False, shuffle=False)
         
     elif args.model_class in ("gdaconv", "postpool"): # baseline classifier architectures
         if args.multiclass: # multiclass attribution mode
-            test_datagen = load_numpy_attribution(
-                args.TEST_DATASET, train=False, shuffle=False, 
-                multiclass=True, baseline_model=True)
+            test_data = load_numpy_attribution(
+                args.TEST_DATASET, source_list=source_list, train=False, shuffle=False, 
+                multiclass=True, baseline=True)
         else: # binary attribution mode
-            test_datagen = load_numpy_attribution(
+            test_data = load_numpy_attribution(
                 args.TEST_DATASET, source=args.source, arch_level=args.arch_level, 
-                train=False, shuffle=False, baseline_model=True)
+                train=False, shuffle=False, baseline=True)
             
     else: # multilabel attribution using default model
         if args.multiclass:
-            test_datagen = load_numpy_attribution(
-                args.TEST_DATASET, train=False, shuffle=False, multiclass=True)
+            test_data = load_numpy_attribution(
+                args.TEST_DATASET, source_list=source_list, train=False, 
+                shuffle=False, multiclass=True)
         else:
-            test_datagen = load_numpy_attribution(
+            test_data = load_numpy_attribution(
                 args.TEST_DATASET, source=args.source, arch_level=args.arch_level, 
                 train=False, shuffle=False)
     # END CONFIGURE MINIBATCH LOADER
@@ -541,7 +518,7 @@ def test_model(args):
     #     results_path.mkdir(parents=True)
     
     # EVALUATE MODEL ON TEST SET
-    raw_predictions = np.array(model.predict(test_datagen, verbose=0))
+    raw_predictions = np.array(model.predict(test_data, verbose=0))
     
     # REORGANIZE MODEL OUTPUTS
     if raw_predictions.ndim < 3:
@@ -590,37 +567,7 @@ def test_model(args):
     Default model multiclass attribution: (2, Dataset size)
     """
     
-    # PREPARE GROUND TRUTH LABELS
-    labels = np.load(f"{args.TEST_DATASET}/labels.npy")
-    if args.MODEL_TYPE == "att":
-        source_labels = np.load(f"{args.TEST_DATASET}/source_labels.npy")
-        source_of_interest = args.source
-        if args.arch_level:
-            source_of_interest = source_of_interest.split('_')[0]
-        
-    ground_truth = np.empty(predictions.shape, dtype=np.int8)
-    if args.MODEL_TYPE == "att" and args.multiclass:
-        if args.model_class == "default":
-            for i in range(predictions.shape[1]):
-                ground_truth[0,i] = labels[i]
-                ground_truth[1,i] = 0 if (labels[i] == 0) else int(
-                    SOURCE_LABEL_DICT[source_labels[i]])
-        else:
-            for i in range(predictions.shape[1]):
-                ground_truth[0,i] = 0 if (labels[i] == 0) else int(
-                    SOURCE_LABEL_DICT[source_labels[i]])
-    else:
-        for i in range(predictions.shape[1]):
-            if args.MODEL_TYPE == "det" or args.model_class == "default":
-                ground_truth[0,i] = labels[i]
-            if args.MODEL_TYPE == "att":
-                source_label = source_labels[i]
-                if args.arch_level:
-                    source_label = source_label.split('_')[0]
-                ground_truth[(1 if (args.model_class == "default") else 0), i] = 1 if (
-                    source_label == source_of_interest) else 0
-    
-    # PRODUCE AND SAVE TEST RESULTS GRAPHICS
+    # DETERMINE SCENARIO CODE
     if args.MODEL_TYPE == "att":
         if args.multiclass:
             if args.model_class == "default":
@@ -633,13 +580,44 @@ def test_model(args):
             scenario_code = 2
     else:
         scenario_code = 1
+    
+    # PREPARE GROUND TRUTH LABELS
+    labels = np.load(f"{args.TEST_DATASET}/labels.npy")
+    if args.MODEL_TYPE == "att":
+        source_labels = np.load(f"{args.TEST_DATASET}/source_labels.npy")
+        if scenario_code in [3, 5]:
+            source = source_list
+        elif scenario_code in [2, 4]:
+            source = args.source
+            if args.arch_level:
+                source = source.split('_')[0]
         
-    if scenario_code in [2, 4]:
-        process_test_results(results_path, ground_truth, predictions, mode=scenario_code, 
-                             source=source_of_interest, test_id=test_timestamp)
+    ground_truth = np.empty(predictions.shape, dtype=np.int8)
+    if args.MODEL_TYPE == "att" and args.multiclass:
+        if args.model_class == "default":
+            for i in range(predictions.shape[1]):
+                ground_truth[0,i] = labels[i]
+                ground_truth[1,i] = 0 if (labels[i] == 0) else source(source_labels[i])
+        else:
+            for i in range(predictions.shape[1]):
+                ground_truth[0,i] = 0 if (labels[i] == 0) else source(source_labels[i])
     else:
-        process_test_results(
-            results_path, ground_truth, predictions, mode=scenario_code, test_id=test_timestamp)
+        for i in range(predictions.shape[1]):
+            if args.MODEL_TYPE == "det" or args.model_class == "default":
+                ground_truth[0,i] = labels[i]
+            if args.MODEL_TYPE == "att":
+                source_label = source_labels[i]
+                if args.arch_level:
+                    source_label = source_label.split('_')[0]
+                ground_truth[(1 if (args.model_class == "default") else 0), i] = 1 if (
+                    source_label == source) else 0
+    
+    # PRODUCE AND SAVE TEST RESULTS GRAPHICS
+    if args.MODEL_TYPE == "att":
+        process_test_results(results_path, ground_truth, predictions, 
+                             source=source, mode=scenario_code, test_id=test_timestamp)
+    else:
+        process_test_results(results_path, ground_truth, predictions, mode=1, test_id=test_timestamp)
     
     # SAVE RAW OUTPUTS
     print(f"Saving model predictions and ground truth labels to {raw_results_path}...")
@@ -653,6 +631,10 @@ def test_model(args):
 
 def main(args):
     
+    global STRATEGY # distributed training strategy
+    if STRATEGY is None:
+        STRATEGY = tf.distribute.MirroredStrategy()
+    
     # Input validation checks
     if args.model_class not in ("default, gdaconv, postpool"):
         raise NotImplementedError("Invalid model class specified!")
@@ -660,8 +642,12 @@ def main(args):
         raise NotImplementedError("Invalid model type specified!")
     if args.MODEL_TYPE == "att" and not args.multiclass and args.source is None:
         raise ValueError("No designated source label specified!")
-    if args.multiclass and args.arch_level:
-        raise NotImplementedError("Architecture-level multiclass attribution not yet supported!")
+    if args.multiclass:
+        if args.arch_level:
+            raise NotImplementedError("Architecture-level multiclass attribution not yet supported!")
+        if args.mode == "train" and args.source_list is None:
+            raise ValueError("No source_ids.csv specified!")
+            
     init_tf(args)
     
     # Set random seeds
@@ -674,12 +660,12 @@ def main(args):
             if args.MODEL_TYPE == "att" and args.model_class == "default" and args.det_model is None:
                 raise ValueError("Trained detection model weights required!")
         elif not Path(args.model).exists():
-            raise ValueError(f"{args.model} does not exist!")
+            raise ValueError(f"The model at {args.model} does not exist!")
         train_model(args)
         
     elif args.mode == "test": # Test mode
         if not Path(args.MODEL).exists():
-            raise ValueError(f"{args.MODEL} does not exist!")
+            raise ValueError(f"The model at {args.MODEL} does not exist!")
         test_model(args)
         
     else: # Invalid mode
@@ -687,7 +673,8 @@ def main(args):
 
 
 def parse_args():
-    global BATCH_SIZE, INPUT_SHAPE, NUM_SOURCES, SEED, TRAIN_SIZE, VAL_SIZE, TEST_SIZE
+    global BATCH_SIZE, INPUT_SHAPE, NUM_FAKE_SOURCES, NUM_REAL_SOURCES, SEED
+    global TRAIN_SIZE, VAL_SIZE, TEST_SIZE, REAL_FACTOR
     
     parser = argparse.ArgumentParser()
     parser.add_argument("MODEL_TYPE",               help="Select classifier type {det, att}.", type=str)
@@ -705,32 +692,38 @@ def parse_args():
     train.add_argument("--model",           "-m",   help="Path to trained model HDF5 file.", type=str, default=None)
     train.add_argument("--model_id",        "-j",   help="Specify ID of model family.", type=str, default=None)
     train.add_argument("--instance_id",     "-k",   help="Specify ID of model instance/variant.", type=str, default=None)
-    train.add_argument("--epochs",          "-e",   help="Epochs to train for. Default: 50.", type=int, default=50)
-    train.add_argument("--image_size",      "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=256)
+    train.add_argument("--epochs",          "-e",   help="Epochs to train for. Default: 100.", type=int, default=100)
+    train.add_argument("--image_size",      "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=160)
     train.add_argument("--early_stopping",          help="Early stopping criteria. Default: 5 epochs", type=int, default=5)
     train.add_argument("--learning_rate",           help="Learning rate for Adam optimizer. Default: 0.001", type=float, default=0.001)
-    train.add_argument("--num_sources",     "-n",   help=f"Number of image sources. Default: {NUM_SOURCES}", type=int, default=5)
+    train.add_argument("--num_sources",     "-n",   help=f"Number of fake sources. Default: {NUM_FAKE_SOURCES}", type=int, default=4)
+    train.add_argument("--num_real_sources","-o",   help=f"Number of real sources. Default: {NUM_REAL_SOURCES}", type=int, default=1)
     train.add_argument("--source",          "-l",   help="Designated source label for attribution.", type=str, default=None)
     train.add_argument("--det_model",               help="(New att models) Path to trained detection model HDF5.", type=str, default=None)
     train.add_argument("--arch_level",              help="Enable architecture level attribution. Default: instance level", action="store_true")
     train.add_argument("--greyscale",       "-g",   help="Train on greyscale images.", action="store_true")
     train.add_argument("--batch_size",      "-b",   help=f"Batch size. Default: {BATCH_SIZE}", type=int, default=256)
     train.add_argument("--multiclass",              help="Enable multiclass attribution", action="store_true")
+    train.add_argument("--source_list",     "-u",   help="For multiclass: Path to the CSV file of source IDs pertaining to the dataset", type=str, default=None)
     train.add_argument("--debug",           "-d",   help="Debug mode: no callbacks during training loop", action="store_true")
-    train.add_argument("--train_size",      "-t",   help="Training set size per class. Default: 7000", type=int, default=7000)
-    train.add_argument("--val_size",        "-v",   help="Validation set size per class. Default: 1000", type=int, default=1000)
+    train.add_argument("--train_size",      "-t",   help="Training set size per class. Default: 700", type=int, default=700)
+    train.add_argument("--val_size",        "-v",   help="Validation set size per class. Default: 150", type=int, default=150)
+    train.add_argument("--real_size_factor","-r",   help="Multiplier for train_size and val_size for real image samples. Default: 1", type=int, default=1)
     
     test = commands.add_parser("test")
-    test.add_argument("MODEL",                      help="Path to trained model.", type=str)
-    test.add_argument("TEST_DATASET",               help="Testing dataset to load.", type=str)
-    test.add_argument("--image_size",       "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=256)
-    test.add_argument("--num_sources",      "-n",   help=f"Number of image sources. Default: {NUM_SOURCES}", type=int, default=5)
+    test.add_argument("MODEL",                      help="Path to the trained model for evaluation.", type=str)
+    test.add_argument("TEST_DATASET",               help="Testing dataset directory to load.", type=str)
+    test.add_argument("--source_list",      "-u",   help="Path to the CSV file of source IDs pertaining to the dataset", type=str, default=None)
+    test.add_argument("--image_size",       "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=160)
+    test.add_argument("--num_sources",      "-n",   help=f"Number of fake sources. Default: {NUM_FAKE_SOURCES}", type=int, default=4)
+    test.add_argument("--num_real_sources", "-o",   help=f"Number of real sources. Default: {NUM_REAL_SOURCES}", type=int, default=1)
     test.add_argument("--source",           "-l",   help="Designated source label for attribution.", type=str)
     test.add_argument("--arch_level",               help="Enable architecture level attribution. Default: instance level", action="store_true")
     test.add_argument("--greyscale",        "-g",   help="Test on greyscale images.", action="store_true")
     test.add_argument("--batch_size",       "-b",   help=f"Batch size. Default: {BATCH_SIZE}", type=int, default=256)
     test.add_argument("--multiclass",               help="Enable multiclass attribution", action="store_true")
-    test.add_argument("--test_size",        "-t",   help="Testing set size per class. Default: 2000", type=int, default=2000)
+    test.add_argument("--test_size",        "-t",   help="Testing set size per class. Default: 150", type=int, default=150)
+    test.add_argument("--real_size_factor", "-r",   help="Multiplier for test_size for real image samples, if any. Default: 1", type=int, default=1)
 
     args = parser.parse_args()
     
@@ -739,7 +732,9 @@ def parse_args():
         INPUT_SHAPE = (args.image_size, args.image_size, 1)
     else:
         INPUT_SHAPE = (args.image_size, args.image_size, 3)
-    NUM_SOURCES = args.num_sources
+    NUM_FAKE_SOURCES = args.num_sources
+    NUM_REAL_SOURCES = args.num_real_sources
+    REAL_FACTOR = args.real_size_factor
     SEED = args.seed
     
     if args.mode == "train":
