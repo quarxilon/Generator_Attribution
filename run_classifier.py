@@ -20,12 +20,16 @@ from data_prep.maths import log_scale
 from data_prep.dataset_util import image_paths
 from data_prep.img_numpy import load_image, dct2
 from data_prep.img_tflow import dct2_tf
-from classifier.models import (build_detection_model, 
-                               build_attribution_model)
+from classifier.models import (build_primary_model, 
+                               build_full_model)
 
 # global default parameters
 BATCH_SIZE = 32
-INPUT_SHAPE = (256, 256, 3)
+INPUT_SHAPE = (128, 128, 3)
+CMAP = cv2.COLORMAP_JET
+FONT = cv2.FONT_HERSHEY_PLAIN
+THRESHOLD = 0.5
+COLOUR = {"white": (255,255,255), "black": (0,0,0), "red": (0,0,255), "green": (0,255,0)}
 
 
 class DCTLayer(keras.layers.Layer):
@@ -83,7 +87,7 @@ def init_tf(args):
     print("TensorFlow initialized...")
 
 
-def _pixel_model(model_type, input_shape, model_path):
+def _pixel_model(model_type, input_shape, model_path, model_class="default"):
     
     """
     Constructs and loads a pixel (RGB) input model.
@@ -96,6 +100,8 @@ def _pixel_model(model_type, input_shape, model_path):
         Input image tensor shape.
     model_path : string
         Trained model weights filepath.
+    model_class : string, optional
+        Classifier architecture {default, notl}.
 
     Returns
     -------
@@ -109,9 +115,12 @@ def _pixel_model(model_type, input_shape, model_path):
     """
     
     if model_type == "att":
-        model = build_attribution_model(input_shape, gap=True, cam=True)
+        if model_class == "notl":
+            model = build_primary_model(input_shape, gap=True, cam=True, prefix="a")
+        else:
+            model = build_full_model(input_shape, gap=True, cam=True)
     else:
-        model = build_detection_model(input_shape, gap=True, cam=True)
+        model = build_primary_model(input_shape, gap=True, cam=True)
         
     # Loads model weights and disables trainability
     model.load_weights(model_path, by_name=True)
@@ -120,12 +129,17 @@ def _pixel_model(model_type, input_shape, model_path):
         if isinstance(layer, keras.layers.BatchNormalization):
             layer.training = False
     model.summary()
-        
+
     # Extract weights from decision layer(s) for class activation mapping
-    det_cam_weights = model.get_layer(name="dDecision").get_weights()[0]
     if model_type == "att":
-        att_cam_weights = model.get_layer(name="aDecision").get_weights()[0]
+        if model_class == "notl":
+            det_cam_weights = None
+            att_cam_weights = model.get_layer(name="aDecision").get_weights()[0]
+        else:
+            det_cam_weights = model.get_layer(name="dDecision").get_weights()[0]
+            att_cam_weights = model.get_layer(name="aDecision").get_weights()[0]
     else:
+        det_cam_weights = model.get_layer(name="dDecision").get_weights()[0]
         att_cam_weights = None
     
     inputs = keras.Input(shape=input_shape)
@@ -138,7 +152,7 @@ def _pixel_model(model_type, input_shape, model_path):
     return model, det_cam_weights, att_cam_weights
 
 
-def _dct_model(model_type, input_shape, model_path, mean, std):
+def _dct_model(model_type, input_shape, model_path, mean, std, model_class="default"):
     
     """
     Constructs and loads a DCT input model.
@@ -155,6 +169,8 @@ def _dct_model(model_type, input_shape, model_path, mean, std):
         Dataset sample mean for normalization.
     std : np.array
         Dataset sample standard deviation for normalization.
+    model_class : string, optional
+        Classifier architecture {default, notl}.
 
     Returns
     -------
@@ -164,9 +180,12 @@ def _dct_model(model_type, input_shape, model_path, mean, std):
     """
     
     if model_type == "att":
-        model = build_attribution_model(input_shape, gap=False, cam=True)
+        if model_class == "notl":
+            model = build_primary_model(input_shape, gap=False, cam=True, prefix="a")
+        else:
+            model = build_full_model(input_shape, gap=False, cam=True)
     else:
-        model = build_detection_model(input_shape, gap=False, cam=True)
+        model = build_primary_model(input_shape, gap=False, cam=True)
     
     # Loads model weights and disables trainability
     model.load_weights(model_path, by_name=True)
@@ -302,7 +321,22 @@ def _impose_heatmap(raw_heatmap, image, cmap=cv2.COLORMAP_JET):
     return cv2.addWeighted(heatmap, 0.5, image, 0.5, 0)
 
 
-def gradcam_dct(raw_images, fmaps, gradients, cmap=cv2.COLORMAP_JET):
+def _insert_labels(image, label, font=FONT, top_left=(0,0), font_scale=1, 
+                   font_thickness=1, label_text_colour=COLOUR["white"]):
+    x, y = top_left
+    label_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+    label_width, label_height = label_size
+    background_region = image[y: y + label_height, x: x + label_width]
+    background = np.zeros(background_region.shape, dtype=np.uint8)
+    image[y: y + label_height, x: x + label_width] = cv2.addWeighted(
+        background_region, 0.5, background, 0.5, 1.0)
+    image = cv2.putText(
+        image, label, (x, (y + label_height + font_scale - 1)),
+        font, font_scale, label_text_colour, font_thickness)
+    return image
+
+
+def gradcam_dct(raw_images, fmaps, gradients, cmap=CMAP):
     
     """
     GradCAM implementation for DCT input classifiers.
@@ -338,13 +372,13 @@ def main(args):
     
     if args.MODEL_TYPE not in ("det", "att"):
         raise NotImplementedError("Invalid model type specified!")
+    if args.model_class not in ("default", "notl"):
+        raise NotImplementedError("Invalid model class specified!")
     init_tf(args)
         
     current_timestamp = dt.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     model_name = Path(args.MODEL).stem
     output_path = Path(args.OUTPUT.rstrip('/')).joinpath(f"{model_name}_{current_timestamp}")
-    cv2_font = cv2.FONT_HERSHEY_SIMPLEX
-    threshold = 0.5
     
     images, image_paths, image_ids = _load_images(args.DATA, amount=args.size, batch_size=BATCH_SIZE,
                                                   greyscale=(True if (INPUT_SHAPE[2] == 1) else False),
@@ -353,16 +387,16 @@ def main(args):
     if args.dct:
         model = _dct_model(args.MODEL_TYPE, INPUT_SHAPE, args.MODEL,
                            np.load(f"{args.normstats.rstrip('/')}/mean.npy"),
-                           np.load(f"{args.normstats.rstrip('/')}/std_dev.npy"))
+                           np.load(f"{args.normstats.rstrip('/')}/std_dev.npy"),
+                           model_class=args.model_class)
     else:
         model, det_cam_weights, att_cam_weights = _pixel_model(
-            args.MODEL_TYPE, INPUT_SHAPE, args.MODEL)
+            args.MODEL_TYPE, INPUT_SHAPE, args.MODEL, model_class=args.model_class)
         
     # counters
     fake_count = 0
-    if args.MODEL_TYPE == "att":
-        att_count = 0
-        stupid_count = 0
+    att_count = 0
+    stupid_count = 0
     
     # BATCH-WISE LOOP
     for i in tqdm(range(0, len(images), BATCH_SIZE)):
@@ -383,9 +417,9 @@ def main(args):
         real_ids = []
         img_ids = image_ids[i: i + BATCH_SIZE]
         
-        # Deepfake detection
+        # Deepfake detection (default) or image source attribution (no transfer learning)
         det_images = list(map(_process_image_cv2, image_paths[i: i + BATCH_SIZE]))
-        if args.MODEL_TYPE == "att":
+        if args.MODEL_TYPE == "att" and args.model_class == "default":
             att_images = det_images.copy()
         
         if args.dct: # GradCAM
@@ -398,27 +432,34 @@ def main(args):
                     det_cams[j, :, :] += w * det_fmaps.numpy()[j, :, :, k]
             det_images = list(map(_impose_heatmap, det_cams, det_images))
         
+        lower_text = None
         for j, pred in enumerate(det_preds):
-            if pred.numpy() > threshold:
-                fake_count += 1
-                label_text = f"FAKE:{pred.numpy(): 3.2%}"
-                label_bgr = (255,255,255)
+            if args.MODEL_TYPE == "att" and args.model_class == "notl":
+                if pred.numpy() > THRESHOLD:
+                    att_count += 1
+                label_text = f"{args.source}:"
+                lower_text = f"{pred.numpy(): <3.2%}"
             else:
-                real_ids.append(j)
-                label_text = f"REAL:{(1.00 - pred.numpy()): 3.2%}"
-                label_bgr = (255,255,255) if args.dct else (0,255,0)
+                if pred.numpy() > THRESHOLD:
+                    fake_count += 1
+                    label_text = f"FAKE:{pred.numpy(): 3.2%}"
+                else:
+                    real_ids.append(j)
+                    label_text = f"REAL:{(1.00 - pred.numpy()): 3.2%}"
             if not args.nolabels:
                 if args.dct:
-                    det_dcts[j] = cv2.putText(det_dcts[j], label_text, (8, 16), cv2_font, 
-                                              0.5, label_bgr, 1, cv2.LINE_AA)
+                    det_dcts[j] = _insert_labels(det_dcts[j], label_text, top_left=(8,8))
+                    if lower_text:
+                        det_dcts[j] = _insert_labels(det_dcts[j], lower_text, top_left=(8,24))
                 else:
-                    det_images[j] = cv2.putText(det_images[j], label_text, (8, 16), cv2_font, 
-                                                0.5, label_bgr, 1, cv2.LINE_AA)
+                    det_images[j] = _insert_labels(det_images[j], label_text, top_left=(8,8))
+                    if lower_text:
+                        det_images[j] = _insert_labels(det_images[j], lower_text, top_left=(8,24))
         if args.dct:
             det_images = [cv2.hconcat([det_images[j], det_dcts[j]]) for j in range(BATCH_SIZE)]
                 
-        # Image source attribution
-        if args.MODEL_TYPE == "att":
+        # Image source attribution (default)
+        if args.MODEL_TYPE == "att" and args.model_class == "default":
             
             if args.dct: # GradCAM
                 att_grads = tape.gradient(att_preds, att_fmaps)
@@ -438,17 +479,12 @@ def main(args):
                 if not args.nolabels:
                     label_text = f"{args.source}:"
                     lower_text = f"{pred.numpy(): <3.2%}"
-                    label_bgr = (255,255,255)
                     if args.dct:
-                        att_dcts[j] = cv2.putText(att_dcts[j], label_text, (8, 16), cv2_font,
-                                                  0.5, label_bgr, 1, cv2.LINE_AA)
-                        att_dcts[j] = cv2.putText(att_dcts[j], lower_text, (8, 32), cv2_font,
-                                                  0.5, label_bgr, 1, cv2.LINE_AA)
+                        att_dcts[j] = _insert_labels(att_dcts[j], label_text, top_left=(8,8))
+                        att_dcts[j] = _insert_labels(att_dcts[j], lower_text, top_left=(8,24))
                     else:
-                        att_images[j] = cv2.putText(att_images[j], label_text, (8, 16), cv2_font,
-                                                    0.5, label_bgr, 1, cv2.LINE_AA)   
-                        att_images[j] = cv2.putText(att_images[j], lower_text, (8, 32), cv2_font,
-                                                    0.5, label_bgr, 1, cv2.LINE_AA)
+                        att_images[j] = _insert_labels(att_images[j], label_text, top_left=(8,8)) 
+                        att_images[j] = _insert_labels(att_images[j], lower_text, top_left=(8,24))
             if args.dct:
                 det_images = [cv2.hconcat([det_images[j], att_dcts[j]]) for j in range(BATCH_SIZE)]
             else:
@@ -459,10 +495,11 @@ def main(args):
         del tape
         # END OF BATCH-WISE LOOP
 
-    print(f"{fake_count/len(images): 3.2%} ({fake_count}) of the {len(images)} assessed images are predicted to be of GAN origin.")
+    if not (args.MODEL_TYPE == "att" and args.model_class == "notl"):
+        print(f"{fake_count/len(images): 3.2%} ({fake_count}) of the {len(images)} assessed images are predicted to be fake.")
     if args.MODEL_TYPE == "att":
         print(f"{att_count/len(images): 3.2%} ({att_count}) of images are predicted to have been generated by {args.source}.")
-        if stupid_count > 0:
+        if args.model_class == "default" and stupid_count > 0:
             print(f"WARNING: {stupid_count/att_count: 3.2%} ({stupid_count}) of images attributed to {args.source} were predicted to be real.")
 
 
@@ -475,15 +512,16 @@ def parse_args():
     parser.add_argument("MODEL",                help="Path to trained model.", type=str)
     parser.add_argument("DATA",                 help="Directory of images to classify.")
     parser.add_argument("OUTPUT",               help="Directory of labelled image outputs")
-    parser.add_argument("--dct",        "-f",   help="Accept DCT coefficients as input", action="store_true")
+    parser.add_argument("--model_class","-c",   help="Select classifier architecture {default, notl}.", type=str, default="default")
+    parser.add_argument("--dct",        "-f",   help="FLAG: Accept DCT coefficients as input", action="store_true")
     parser.add_argument("--normstats",  "-n",   help="Directory of mean/var/stdev for log-norm DCT coefficients.", type=str, default=None)
     parser.add_argument("--size",       "-s",   help="Only process this amount of images.", type=int, default=None)
     parser.add_argument("--batch_size", "-b",   help=f"Batch size. Default: {BATCH_SIZE}.", type=int, default=None)
-    parser.add_argument("--image_size", "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=256)
+    parser.add_argument("--image_size", "-i",   help=f"Image size. Default: {INPUT_SHAPE[0]}", type=int, default=128)
     parser.add_argument("--source",     "-l",   help="Designated source label for attribution.", type=str, default="[SOURCE]")
-    parser.add_argument("--greyscale",  "-g",   help="Train on greyscale images.", action="store_true")
-    parser.add_argument("--nolabels",   "-x",	help="Exclude predicted labels from output heatmaps.", action="store_true")
-    parser.add_argument("--sourcetags", "-t",	help="Add source label prefixes to image IDs; required for some datasets.", action="store_true")
+    parser.add_argument("--greyscale",  "-g",   help="FLAG: Train on greyscale images.", action="store_true")
+    parser.add_argument("--nolabels",   "-x",	help="FLAG: Exclude predicted labels from output heatmaps.", action="store_true")
+    parser.add_argument("--sourcetags", "-t",	help="FLAG: Add source label prefixes to image IDs; required for some datasets.", action="store_true")
 
     args = parser.parse_args()
     

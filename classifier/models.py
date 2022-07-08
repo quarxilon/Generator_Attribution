@@ -29,10 +29,10 @@ def layer_name(prefix, name, number):
     return f"{prefix}{name}_{number:02d}"
 
 
-def build_detection_layers(input_shape, init, prefix="d"):
+def build_primary_layers(input_shape, init, prefix="d"):
     
     """
-    Assembles primary convolutional layers, used for deepfake detection.
+    Assembles primary convolutional module, used for deepfake detection.
     DOES NOT PRODUCE A FULL NEURAL NET!
     
     Parameters
@@ -124,10 +124,9 @@ CHANGELOG 2021/03/12:
 """
 
 
-def build_gap_decision_layer(features, init, prefix):
+def build_gap_decision_layer(features, init, prefix, softmax=False, num_classes=1):
     """
     Assembles a decision layer with the class activation mapping topology.
-
     Parameters
     ----------
     features : keras.layers.Layer
@@ -136,23 +135,29 @@ def build_gap_decision_layer(features, init, prefix):
         Weight initializer.
     prefix : str
         Prefix added to all layer names.
-
+    softmax : bool, optional
+        Softmax for multiclass outputs. False by default.
+    num_classes : int, optional
+        Number of classes specified for multiclass outputs. 
+        The default is 1. Only considered if softmax=True.
     Returns
     -------
     prediction : keras.layers.Layer
-        Decision layer output [0,1]
-
+        Decision layer output(s).
     """
     x = layers.GlobalAveragePooling2D(name=f"{prefix}GAP")(features)
-    prediction = layers.Dense(1, activation="sigmoid", kernel_initializer=init, 
-                              name=f"{prefix}Decision")(x)  
+    if softmax:
+        prediction = layers.Dense(num_classes, activation="softmax", kernel_initializer=init,
+                                  name=f"{prefix}Decision")(x)
+    else:
+        prediction = layers.Dense(1, activation="sigmoid", kernel_initializer=init, 
+                                  name=f"{prefix}Decision")(x)  
     return prediction
 
 
-def build_flat_decision_layer(features, init, prefix):
+def build_flat_decision_layer(features, init, prefix, softmax=False, num_classes=1):
     """
     Assembles a conventional, fully-connected decision layer.
-
     Parameters
     ----------
     features : keras.layers.Layer
@@ -161,23 +166,30 @@ def build_flat_decision_layer(features, init, prefix):
         Weight initializer.
     prefix : str
         Prefix added to all layer names.
-
+    softmax : bool, optional
+        Softmax for multiclass outputs. False by default.
+    num_classes : int, optional
+        Number of classes specified for multiclass outputs. 
+        The default is 1. Only considered if softmax=True.
     Returns
     -------
     prediction : keras.layers.Layer
-        Decision layer output [0,1]
-
+        Decision layer output(s).
     """
     x = layers.Flatten(name=f"{prefix}Flatten")(features)
-    prediction = layers.Dense(1, activation="sigmoid", kernel_initializer=init, 
-                              name=f"{prefix}Decision")(x)
+    if softmax:
+        prediction = layers.Dense(num_classes, activation="softmax", kernel_initializer=init,
+                                  name=f"{prefix}Decision")(x)
+    else:
+        prediction = layers.Dense(1, activation="sigmoid", kernel_initializer=init, 
+                                  name=f"{prefix}Decision")(x)  
     return prediction
     
 
-def build_attribution_layers(det_features, init, num_fmaps=32, prefix="a"):
+def build_secondary_layers(det_features, init, num_fmaps=32, prefix="a"):
     
     """
-    Assembles secondary convolutional layers, used for source generator attribution.
+    Assembles secondary convolutional module, used for source generator attribution.
     DOES NOT CONTAIN AN INPUT LAYER OR PRODUCE A FULL NEURAL NET!
     
     Parameters
@@ -212,10 +224,11 @@ def build_attribution_layers(det_features, init, num_fmaps=32, prefix="a"):
     return att_features
 
 
-def build_detection_model(input_shape, init=None, gap=True, cam=False):
+def build_primary_model(input_shape, init=None, gap=True, cam=False, 
+                        prefix="d", softmax=False, num_classes=1):
     
     """
-    Returns a deepfake detection only model.
+    Returns a model containing only the primary module.
     
     Parameters
     ----------
@@ -228,17 +241,24 @@ def build_detection_model(input_shape, init=None, gap=True, cam=False):
     cam : bool, optional
         Include feature maps with model outputs for class activation mapping.
         Set to True for visualizing model behaviour. The default is False.
+    softmax : bool, optional
+        Softmax for multiclass outputs. False by default.
+    num_classes : int, optional
+        Number of classes specified for multiclass outputs. 
+        The default is 1. Only considered if softmax=True.
         
     """
     
     if init is None:
         init = initializers.RandomNormal(stddev=0.02)
         
-    inputs, det_layers, _ = build_detection_layers(input_shape, init)
+    inputs, det_layers, _ = build_primary_layers(input_shape, init)
     if gap:
-        full_layers = build_gap_decision_layer(det_layers, init, prefix="d")
+        full_layers = build_gap_decision_layer(det_layers, init, prefix=prefix, 
+                                               softmax=softmax, num_classes=num_classes)
     else:
-        full_layers = build_flat_decision_layer(det_layers, init, prefix="d")
+        full_layers = build_flat_decision_layer(det_layers, init, prefix=prefix,
+                                                softmax=softmax, num_classes=num_classes)
         
     if cam:
         model = keras.Model(inputs, [full_layers, det_layers])
@@ -248,10 +268,10 @@ def build_detection_model(input_shape, init=None, gap=True, cam=False):
     return model
 
 
-def build_attribution_model(input_shape, init=None, gap=True, cam=False):
+def build_full_model(input_shape, init=None, gap=True, cam=False):
     
     """
-    Returns a deepfake detection and binary source generator attribution model.
+    Returns a model containing the primary module and one secondary module.
     
     Parameters
     ----------
@@ -270,8 +290,8 @@ def build_attribution_model(input_shape, init=None, gap=True, cam=False):
     if init is None:
         init = initializers.RandomNormal(stddev=0.02)
         
-    inputs, det_layers, mid_layers = build_detection_layers(input_shape, init)
-    att_layers = build_attribution_layers(mid_layers, init)
+    inputs, det_layers, mid_layers = build_primary_layers(input_shape, init)
+    att_layers = build_secondary_layers(mid_layers, init)
     
     if gap:
         full_det = build_gap_decision_layer(det_layers, init, prefix="d")
@@ -288,7 +308,7 @@ def build_attribution_model(input_shape, init=None, gap=True, cam=False):
     return model
 
 
-def build_multiclass_attribution_model(input_shape, num_sources=1, init=None, gap=True):
+def build_multilabel_model(input_shape, num_classes=1, init=None, gap=True, cam=False):
     
     """
     Returns a deepfake detection and multi-class binary source generator attribution model.
@@ -305,28 +325,36 @@ def build_multiclass_attribution_model(input_shape, num_sources=1, init=None, ga
         Weight initializer.
     gap : bool, optional
         Use the class activation mapping topology. The default is True.
+    cam : bool, optional
+        Include feature maps with model outputs for class activation mapping.
+        Set to True for visualizing model behaviour. The default is False.
         
     """
     
     if init is None:
         init = initializers.RandomNormal(stddev=0.02)
         
-    inputs, det_layers, mid_layers = build_detection_layers(input_shape, init)
+    inputs, det_layers, mid_layers = build_primary_layers(input_shape, init)
     if gap:
-        det_layers = build_gap_decision_layer(det_layers, init, prefix="d")
+        full_det = build_gap_decision_layer(det_layers, init, prefix="d")
     else:
-        det_layers = build_flat_decision_layer(det_layers, init, prefix="d")
+        full_det = build_flat_decision_layer(det_layers, init, prefix="d")
         
     att_layer_list = []
-    for i in range(num_sources):
-        att_layers = build_attribution_layers(mid_layers, init, prefix=f"a{i+1}")
+    for i in range(num_classes):
+        att_layers = build_secondary_layers(mid_layers, init, prefix=f"a{i+1}")
         if gap:
-            att_layers = build_gap_decision_layer(att_layers, init, prefix=f"a{i+1}")
+            full_att = build_gap_decision_layer(att_layers, init, prefix=f"a{i+1}")
         else:
-            att_layers = build_flat_decision_layer(att_layers, init, prefix=f"a{i+1}")
-        att_layer_list.append(att_layers)
+            full_att = build_flat_decision_layer(att_layers, init, prefix=f"a{i+1}")
+        att_layer_list.append(full_att)
+        if cam:
+            att_layer_list.append(att_layers)
         
-    output_list = [det_layers]
+    if cam:
+        output_list = [full_det, det_layers]
+    else:
+        output_list = [full_det]
     output_list.extend(att_layer_list)
     model = keras.Model(inputs, output_list)
     

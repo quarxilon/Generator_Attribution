@@ -32,9 +32,9 @@ POSITIVE_LABEL = 1
 
 # default dataset size per source parameters
 # change via main function
-TRAIN_SIZE = 7000
-VAL_SIZE = 1000
-TEST_SIZE = 2000
+TRAIN_SIZE = 20000
+VAL_SIZE = 4000
+TEST_SIZE = 6000
 
 
 def _get_image_id(image_path):
@@ -474,11 +474,11 @@ def parse_args():
         "--full_test_only", action="store_true",
         help="FLAG: Use all available examples for test-only and adversarial sources.")
     parser.add_argument(
-        "--train_size", help="Training set size per source. Default: 7000", type=int, default=7000)
+        "--train_size", help="Training set size per source. Default: 20000", type=int, default=20000)
     parser.add_argument(
-        "--val_size", help="Validation set size per source. Default: 1000", type=int, default=1000)
+        "--val_size", help="Validation set size per source. Default: 4000", type=int, default=4000)
     parser.add_argument(
-        "--test_size", help="Testing set size per source. Default: 2000", type=int, default=2000)
+        "--test_size", help="Testing set size per source. Default: 6000", type=int, default=6000)
     parser.add_argument(
         "--real_factor", help="Dataset size multiplier for \'real\' sources. Default: 1", type=int, default=1)
     

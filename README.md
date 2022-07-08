@@ -4,7 +4,7 @@
 
 Code for the paper:
 
-**Transferable Class-Modelling for Decentralized Source Attribution of GAN-Generated Images**
+**[Transferable Class-Modelling for Decentralized Source Attribution of GAN-Generated Images](https://arxiv.org/abs/2203.09777)**
 
 This project proposes a convolutional neural net framework that utilizes transfer learning to efficiently identify "deepfake" images synthesized by generative model sources such as generative adversarial networks (GANs), and attribute them to their specific sources relative to all others.
 
@@ -12,10 +12,12 @@ This method was conceived within a series of experiments to determine if reactiv
 
 TensorFlow 2 (Keras API) is used in this implementation.
 
+Official experimental model weights now available in their respective `trained_models` subfolders.
+
 
 # Data preparation
 
-**Refer to README_DATASET.md.**
+**Refer to `README_DATASET.md`.**
 
 
 # Classifier models
@@ -25,13 +27,13 @@ TensorFlow 2 (Keras API) is used in this implementation.
 ![Experimental implementation of the proposed framework. The primary module (red) is trained for deepfake detection, but also reused as the feature extractor for image source attribution. Only the secondary module (green) are trained for (binary one-vs-all) attribution. In the case of multiclass attribution, multiple secondary modules are trained independently, each modelling their own image source with their own (sigmoid) outputs, with the final prediction obtained via arg max.](diagrams/proposed_model.png "Proposed model topology diagram.")
 
 A convolutional neural network based on the gandct-conv model, but with extensive modifications to the architecture informed by the research objective:
-  - The model topology branches out midway into primary and secondary layers.
-    - The **primary layers** are trained for deepfake detection only, learning features meant to distinguish all GAN-generated images (regardless of source) from real images.
-    - The **secondary layers** build upon intermediate features extracted from pretrained primary layers, exploiting them to identify whether the features correspond to the intrinsic fingerprints embedded within the outputs of a particular image source.
-    - Both layers have their own output predictions, but the more reliable primary layers are prioritized in case of contradictory predictions.
+  - The model topology branches out midway into primary and secondary modules.
+    - The **primary module** are trained for deepfake detection only, learning features meant to distinguish all synthetically generated images (regardless of source) from real images.
+    - The **secondary modules** build upon intermediate features extracted from pretrained primary module layers, exploiting them to identify whether the features correspond to the intrinsic fingerprints embedded within the outputs of a particular image source.
+    - Each module has their own output predictions, but the primary module is customarily prioritized in the inevitable event of self-contradictory predictions.
   - The model is designed to approach image source attribution as a **binary classification problem** akin to class-modelling, in which an image can be attributed to either a certain source generator or its complement set of all other source generators.
     - Ideally, the binary attribution approach should also recognize images created by a novel, unknown generator (which may or may not be an unconditional GAN) as belonging in the complement set. Current findings imply that this may not be possible when relying entirely on intrinsic fingerprints.
-    - The conventional multiclass attribution approach used by other studies can be approximated using multiple independently trained secondary layers, though expect worse performance with limited data as mutual exclusivity is not assumed.
+    - The conventional multiclass attribution approach used by other studies can be approximated using multilabel outputs from independently trained secondary modules, though expect performance worse than baseline as mutual exclusivity of outputs is not assumed.
   - **Strided convolution** is used instead of average pooling to retain fine-scale information.
   - **Batch normalization** is applied in all layers but the first. This is inspired by the PatchGAN discriminator architecture.
   - For pixel input variants of the model, the **class activation mapping** structure using global average pooling (GAP) is implemented towards the output layer.
@@ -79,7 +81,7 @@ python classifier.py det \
 - Change `[model_id]` to whatever identifier you wish to call your trained model by.
 - Change `[instance_id]` to whatever identifier you wish to call this particular trained instance of the model. Default: `[instance_id]` = `[model_id]`.
 - Set `[early_stopping]` to the number of epochs permitted to continue training if validation set loss fails to decrease under early stopping regularization. Default is 5.
-- Equivalent for the FacesHQ+ dataset **(proposed default model only)**:
+- Equivalent for the FacesHQ+ dataset **(default model only)**:
    ```
    python classifier.py det \
       -c default --seed 2021 \
@@ -122,7 +124,7 @@ python classifier.py det \
       --early_stopping 10
    ```
 
-## Image source attribution
+## Image source attribution (one vs rest)
 
 For training the baseline models from scratch on the GANFP dataset:
 ```
@@ -254,7 +256,7 @@ For calling **already-trained classifier models** for immediate inference on any
    ```
    python run_classifier.py det \
       trained_models/[model_id]/[instance_id].h5 \
-      dataset/run_classifier/[dataset_id]/clean \
+      dataset/test-[dataset_id]/clean \
       run_outputs/[dataset_id] \
       --batch_size [batch_size] --image_size [image_size]
    ```
@@ -262,14 +264,14 @@ For calling **already-trained classifier models** for immediate inference on any
    - Replace `[dataset_id]` with either `ganfp`, `faceshq+`, or any other dataset ID.
    - Set `[batch_size]` to an integer evenly divisible with the total summarized dataset size.
    - Set `[image_size]` to the spatial resolution of square images in the selected dataset. Default is `256` for FacesHQ+.
-   - Include flag `--dct` or `-f` if working with DCT input model variants. Do not forget to provide `--normstats` or `-n` for image preprocessing **(see README_DATASET.md).**
+   - Include flag `--dct` or `-f` if working with DCT input instances. Do not forget to provide `--normstats` or `-n` for image preprocessing **(see README_DATASET.md).**
    - Include flag `--nolabels` or `-x` to exclude classification confidence scores from the outputs.
    - Include flag `--sourcetags` or `-t` if using the FacesHQ+ dataset, where image IDs are not prefixed with the source generator ID by default.
 3. For image source attribution, run the following:
    ```
    python run_classifier.py att \
       trained_models/[model_id]/[instance_id].h5 \
-      dataset/run_classifier/[dataset_id]/clean \
+      dataset/test-[dataset_id]/clean \
       run_outputs/[dataset_id] \
       --batch_size [batch_size] --image_size [image_size] \
       --source [source]
@@ -277,11 +279,6 @@ For calling **already-trained classifier models** for immediate inference on any
    - Replace `[source]` with the **source of interest** that your selected model instance is trained to identify (for output formatting only).
    - Multiclass attribution is currently unsupported.
 4. Inference results are saved as images in `run_outputs/[dataset_id]` in individually timestamped folders for each run.
-
-
-# Pretrained models
-
-Coming soon...
 
 
 # Acknowledgements
